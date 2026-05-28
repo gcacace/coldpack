@@ -92,10 +92,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
 
     let mut total_archive_size: u64 = 0;
     let mut total_archive_file_count: u32 = 0;
-
-    // Map logical_path -> archive_id for manifest update
-    let mut file_archive_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut archives_created: Vec<(String, String, u64, u32)> = Vec::new(); // (id, s3_key, size, count)
+    let mut manifest = manifest;
 
     if !archive_plan.groups.is_empty() {
         let tmp_dir = std::env::temp_dir().join("coldpack");
@@ -150,32 +147,38 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
             );
             upload_archive(&s3_client, config, profile_dir, &s3_key, &zip_path).await?;
 
-            // Track which files are in this archive
-            for (logical_path, _, _) in &group.files {
-                file_archive_map.insert(logical_path.clone(), archive_id.clone());
-            }
-            archives_created.push((archive_id, s3_key, result.size_bytes, result.file_count));
-
             // Clean up local zip
             let _ = std::fs::remove_file(&zip_path);
+
+            // Update manifest incrementally after each successful upload
+            manifest.archives.push(Archive {
+                id: archive_id.clone(),
+                s3_key: s3_key.clone(),
+                size_bytes: result.size_bytes,
+                created_at: now,
+                file_count: result.file_count,
+            });
+            for (logical_path, _, _) in &group.files {
+                add_file_to_manifest(&mut manifest, &scan_result.changes, logical_path, &archive_id);
+            }
+            manifest.last_backup = Some(now);
+            save_manifest(config, profile_dir, &manifest).await?;
         }
 
         archive_bar.finish_and_clear();
     }
 
-    // 5. Update manifest
-    eprintln!("  Updating manifest...");
-    let updated_manifest = apply_changes_to_manifest_multi(
-        manifest,
-        &scan_result,
-        &archives_created,
-        &file_archive_map,
-        now,
-    );
+    // 5. Apply non-archive changes (moves, deletes) and final save
+    let has_moves_or_deletes = scan_result.changes.iter().any(|c| {
+        matches!(c, FileChange::Moved { .. } | FileChange::Deleted { .. })
+    });
+    if has_moves_or_deletes || archive_plan.groups.is_empty() {
+        apply_moves_and_deletes(&mut manifest, &scan_result.changes, now);
+        manifest.last_backup = Some(now);
+        save_manifest(config, profile_dir, &manifest).await?;
+    }
 
-    // 6. Save manifest locally and to S3
-    save_manifest(config, profile_dir, &updated_manifest).await?;
-    eprintln!("  Manifest saved ({} files tracked).", updated_manifest.files.len());
+    eprintln!("  Manifest saved ({} files tracked).", manifest.files.len());
 
     Ok(BackupReport {
         scan_stats: scan_result.stats,
@@ -334,6 +337,74 @@ async fn download_manifest_from_s3(config: &Config) -> Result<Manifest> {
     let manifest: Manifest =
         serde_json::from_slice(&bytes).with_context(|| "Failed to parse manifest from S3")?;
     Ok(manifest)
+}
+
+fn add_file_to_manifest(
+    manifest: &mut Manifest,
+    changes: &[FileChange],
+    logical_path: &str,
+    archive_id: &str,
+) {
+    let change = changes.iter().find(|c| match c {
+        FileChange::New { logical_path: p, .. } | FileChange::Modified { logical_path: p, .. } => p == logical_path,
+        _ => false,
+    });
+
+    let Some(change) = change else { return };
+
+    match change {
+        FileChange::New { logical_path, size, mtime, fingerprint, .. } => {
+            manifest.files.push(FileEntry {
+                path: logical_path.clone(),
+                size: *size,
+                mtime: *mtime,
+                fingerprint: fingerprint.clone(),
+                archive_id: archive_id.to_string(),
+                history: vec![],
+            });
+        }
+        FileChange::Modified { logical_path, size, mtime, fingerprint, .. } => {
+            if let Some(entry) = manifest.files.iter_mut().find(|f| f.path == *logical_path) {
+                entry.history.push(HistoryEvent::Added {
+                    archive_id: entry.archive_id.clone(),
+                    mtime: entry.mtime,
+                    size: entry.size,
+                });
+                entry.size = *size;
+                entry.mtime = *mtime;
+                entry.fingerprint = fingerprint.clone();
+                entry.archive_id = archive_id.to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_moves_and_deletes(
+    manifest: &mut Manifest,
+    changes: &[FileChange],
+    now: DateTime<Utc>,
+) {
+    for change in changes {
+        match change {
+            FileChange::Moved { logical_path, old_path, fingerprint } => {
+                if let Some(entry) = manifest.files.iter_mut().find(|f| f.path == *old_path) {
+                    entry.history.push(HistoryEvent::Moved {
+                        from: old_path.clone(),
+                        at: now,
+                    });
+                    entry.path = logical_path.clone();
+                    entry.fingerprint = fingerprint.clone();
+                }
+            }
+            FileChange::Deleted { logical_path } => {
+                if let Some(entry) = manifest.files.iter_mut().find(|f| f.path == *logical_path) {
+                    entry.history.push(HistoryEvent::Deleted { at: now });
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 async fn start_new_upload(
@@ -528,6 +599,7 @@ async fn save_manifest(config: &Config, profile_dir: &Path, manifest: &Manifest)
     Ok(())
 }
 
+#[allow(dead_code, unused_variables)]
 pub fn apply_changes_to_manifest_multi(
     mut manifest: Manifest,
     scan_result: &ScanResult,
