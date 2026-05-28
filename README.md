@@ -322,5 +322,5 @@ If a backup is interrupted (power loss, network issue), the next run automatical
 
 s3://<bucket>/
   manifest/manifest.json         # Authoritative manifest (S3 Standard)
-  archives/backup-<date>.tar     # Monthly backup archives (Deep Archive)
+  archives/backup-<YYYY-MM>-run<timestamp>.tar   # Monthly backup archives (Deep Archive)
 ```

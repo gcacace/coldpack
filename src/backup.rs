@@ -112,18 +112,18 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
         let mut files_done: u64 = 0;
 
         for (group_idx, group) in archive_plan.groups.iter().enumerate() {
-            let archive_id = format!("backup-{}-{}", now.to_rfc3339(), group.label);
+            let archive_id = format!("backup-{}-run{}", group.label, now.to_rfc3339());
             let s3_key = format!(
-                "{}backup-{}-{}.tar",
+                "{}backup-{}-run{}.tar",
                 config.storage.archive_prefix,
-                now.format("%Y-%m-%dT%H%M%S"),
-                group.label
+                group.label,
+                now.format("%Y%m%dT%H%M%S")
             );
 
             let archive_path = tmp_dir.join(format!(
-                "backup-{}-{}.tar",
-                now.format("%Y-%m-%dT%H%M%S"),
-                group.label
+                "backup-{}-run{}.tar",
+                group.label,
+                now.format("%Y%m%dT%H%M%S")
             ));
 
             let result = archiver::create_archive_from_group(&archive_path, group, |current, _total| {
