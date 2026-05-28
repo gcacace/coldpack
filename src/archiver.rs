@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
-use chrono::Datelike;
+use chrono::{Datelike, Timelike};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use zip::write::FileOptions;
+use zip::DateTime as ZipDateTime;
 use zip::ZipWriter;
 
 use crate::scanner::FileChange;
@@ -37,6 +38,19 @@ impl ArchivePlan {
     pub fn total_size(&self) -> u64 {
         self.groups.iter().map(|g| g.total_size).sum()
     }
+}
+
+fn system_time_to_zip_datetime(time: std::time::SystemTime) -> ZipDateTime {
+    let dt: chrono::DateTime<chrono::Utc> = time.into();
+    ZipDateTime::from_date_and_time(
+        dt.year() as u16,
+        dt.month() as u8,
+        dt.day() as u8,
+        dt.hour() as u8,
+        dt.minute() as u8,
+        dt.second() as u8,
+    )
+    .unwrap_or_default()
 }
 
 pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan {
@@ -134,11 +148,18 @@ pub fn create_archive_from_group(
     let mut zip = ZipWriter::new(file);
 
     let total = group.files.len() as u32;
-    let options = FileOptions::<()>::default()
-        .compression_method(compression);
 
     for (i, (logical_path, disk_path, _size)) in group.files.iter().enumerate() {
         on_progress(i as u32 + 1, total);
+
+        let metadata = std::fs::metadata(disk_path)
+            .with_context(|| format!("Failed to read metadata: {}", disk_path.display()))?;
+        let mtime = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let zip_time = system_time_to_zip_datetime(mtime);
+
+        let options = FileOptions::<()>::default()
+            .compression_method(compression)
+            .last_modified_time(zip_time);
 
         zip.start_file(logical_path.to_string(), options)
             .with_context(|| format!("Failed to add to archive: {}", logical_path))?;
@@ -200,11 +221,18 @@ pub fn create_archive(
     let mut zip = ZipWriter::new(file);
 
     let total = files_to_archive.len() as u32;
-    let options = FileOptions::<()>::default()
-        .compression_method(compression);
 
     for (i, (logical_path, disk_path)) in files_to_archive.iter().enumerate() {
         on_progress(i as u32 + 1, total);
+
+        let metadata = std::fs::metadata(disk_path)
+            .with_context(|| format!("Failed to read metadata: {}", disk_path.display()))?;
+        let mtime = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let zip_time = system_time_to_zip_datetime(mtime);
+
+        let options = FileOptions::<()>::default()
+            .compression_method(compression)
+            .last_modified_time(zip_time);
 
         zip.start_file(logical_path.to_string(), options)
             .with_context(|| format!("Failed to add to archive: {}", logical_path))?;
