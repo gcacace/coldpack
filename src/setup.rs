@@ -29,6 +29,22 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
     let archive_prefix = prompt_with_default("Archive prefix", "archives/")?;
     let manifest_prefix = prompt_with_default("Manifest prefix", "manifest/")?;
 
+    println!("\nStorage class for archives:");
+    println!("  1. DEEP_ARCHIVE (cheapest, ~$0.001/GB/month, 12h retrieval, 180-day min)");
+    println!("  2. GLACIER (cheap, ~$0.004/GB/month, 3-5h retrieval, 90-day min)");
+    println!("  3. GLACIER_IR (instant retrieval, ~$0.004/GB/month, 90-day min)");
+    println!("  4. STANDARD_IA (infrequent access, ~$0.0125/GB/month, 30-day min)");
+    println!("  5. STANDARD (most expensive, ~$0.023/GB/month, no retrieval delay — good for testing)");
+    let storage_class_choice = prompt_with_default("Choice", "1")?;
+    let storage_class = match storage_class_choice.as_str() {
+        "2" => "GLACIER",
+        "3" => "GLACIER_IR",
+        "4" => "STANDARD_IA",
+        "5" => "STANDARD",
+        _ => "DEEP_ARCHIVE",
+    }
+    .to_string();
+
     // === Backup Sources ===
     println!("\n=== Backup Sources ===");
     let mut sources = Vec::new();
@@ -99,6 +115,7 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
             region,
             archive_prefix,
             manifest_prefix,
+            storage_class,
         },
         backup: BackupConfig {
             sources,
@@ -181,6 +198,7 @@ mod tests {
                 region: "eu-west-1".to_string(),
                 archive_prefix: "archives/".to_string(),
                 manifest_prefix: "manifest/".to_string(),
+                storage_class: "DEEP_ARCHIVE".to_string(),
             },
             backup: BackupConfig {
                 sources: vec![

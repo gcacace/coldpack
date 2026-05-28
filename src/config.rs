@@ -18,6 +18,8 @@ pub struct StorageConfig {
     pub archive_prefix: String,
     #[serde(default = "default_manifest_prefix")]
     pub manifest_prefix: String,
+    #[serde(default = "default_storage_class")]
+    pub storage_class: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -61,6 +63,14 @@ impl Default for PerformanceConfig {
     }
 }
 
+pub const VALID_STORAGE_CLASSES: &[&str] = &[
+    "STANDARD",
+    "STANDARD_IA",
+    "GLACIER_IR",
+    "GLACIER",
+    "DEEP_ARCHIVE",
+];
+
 fn default_archive_prefix() -> String {
     "archives/".to_string()
 }
@@ -71,6 +81,10 @@ fn default_manifest_prefix() -> String {
 
 fn default_cutoff() -> String {
     "start_of_current_month".to_string()
+}
+
+fn default_storage_class() -> String {
+    "DEEP_ARCHIVE".to_string()
 }
 
 fn default_max_io_workers() -> usize {
@@ -172,6 +186,14 @@ fn validate_config(config: &Config) -> Result<()> {
     if cutoff != "start_of_current_month" && cutoff != "none" {
         chrono::NaiveDate::parse_from_str(cutoff, "%Y-%m-%d")
             .with_context(|| format!("Invalid cutoff date '{}': expected 'start_of_current_month', 'none', or YYYY-MM-DD", cutoff))?;
+    }
+
+    if !VALID_STORAGE_CLASSES.contains(&config.storage.storage_class.as_str()) {
+        anyhow::bail!(
+            "Invalid storage_class '{}'. Must be one of: {}",
+            config.storage.storage_class,
+            VALID_STORAGE_CLASSES.join(", ")
+        );
     }
 
     if config.performance.max_io_workers == 0 {
@@ -437,6 +459,7 @@ max_io_workers = 0
                 region: "us-east-1".to_string(),
                 archive_prefix: "archives/".to_string(),
                 manifest_prefix: "manifest/".to_string(),
+                storage_class: "GLACIER".to_string(),
             },
             backup: BackupConfig {
                 sources: vec![SourceConfig {
@@ -451,5 +474,64 @@ max_io_workers = 0
         save_config(&config, &path).unwrap();
         let loaded = load_config(&path).unwrap();
         assert_eq!(config, loaded);
+    }
+
+    #[test]
+    fn test_storage_class_default() {
+        let f = write_config(
+            r#"
+[storage]
+bucket = "b"
+region = "r"
+
+[[backup.sources]]
+name = "a"
+path = "/a"
+"#,
+        );
+
+        let config = load_config(f.path()).unwrap();
+        assert_eq!(config.storage.storage_class, "DEEP_ARCHIVE");
+    }
+
+    #[test]
+    fn test_storage_class_valid_values() {
+        for class in VALID_STORAGE_CLASSES {
+            let content = format!(
+                r#"
+[storage]
+bucket = "b"
+region = "r"
+storage_class = "{}"
+
+[[backup.sources]]
+name = "a"
+path = "/a"
+"#,
+                class
+            );
+            let f = write_config(&content);
+            let config = load_config(f.path()).unwrap();
+            assert_eq!(config.storage.storage_class, *class);
+        }
+    }
+
+    #[test]
+    fn test_storage_class_invalid() {
+        let f = write_config(
+            r#"
+[storage]
+bucket = "b"
+region = "r"
+storage_class = "INVALID_CLASS"
+
+[[backup.sources]]
+name = "a"
+path = "/a"
+"#,
+        );
+
+        let err = load_config(f.path()).unwrap_err();
+        assert!(err.to_string().contains("Invalid storage_class"));
     }
 }

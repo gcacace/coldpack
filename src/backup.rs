@@ -114,6 +114,16 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     })
 }
 
+fn parse_storage_class(s: &str) -> StorageClass {
+    match s {
+        "STANDARD" => StorageClass::Standard,
+        "STANDARD_IA" => StorageClass::StandardIa,
+        "GLACIER_IR" => StorageClass::GlacierIr,
+        "GLACIER" => StorageClass::Glacier,
+        _ => StorageClass::DeepArchive,
+    }
+}
+
 async fn create_s3_client(config: &Config) -> Result<Client> {
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
         .region(aws_config::Region::new(config.storage.region.clone()))
@@ -194,7 +204,7 @@ async fn upload_archive(
             .create_multipart_upload()
             .bucket(&config.storage.bucket)
             .key(s3_key)
-            .storage_class(StorageClass::DeepArchive)
+            .storage_class(parse_storage_class(&config.storage.storage_class))
             .send()
             .await
             .with_context(|| "Failed to initiate multipart upload")?;
