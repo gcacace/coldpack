@@ -3,7 +3,7 @@
 Glacier Deep Archive backup CLI for personal NAS disaster recovery.
 
 Backs up family photos and videos from multiple NAS folders to Amazon S3 Glacier Deep Archive with:
-- One zip per monthly backup run (minimal object count, minimal cost)
+- One tar archive per monthly backup run (minimal object count, minimal cost)
 - Move/rename detection (reorganized files are not re-uploaded)
 - Full file-level manifest for searching without downloading
 - Resumable multipart uploads with checkpointing
@@ -221,7 +221,7 @@ Interactive wizard to create or overwrite a profile configuration.
 
 ### `coldpack backup [--dry-run] [--cutoff <date|"none">]`
 
-Scan all configured sources, detect changes, create a zip of new/modified files, upload to Glacier Deep Archive, and update the manifest.
+Scan all configured sources, detect changes, create a tar archive of new/modified files, upload to Glacier Deep Archive, and update the manifest.
 
 - `--dry-run`: Show what would be backed up without uploading
 - `--cutoff 2026-05-01`: Override the cutoff date (only backup files older than this)
@@ -287,9 +287,9 @@ On each backup run, coldpack compares the current state of your NAS folders agai
 | State | Condition | Action |
 |-------|-----------|--------|
 | Unchanged | Same path, same mtime + size | Skip |
-| Modified | Same path, different mtime or size | Include in zip |
+| Modified | Same path, different mtime or size | Include in archive |
 | Moved | New path, same fingerprint (xxHash of first 64KB + file size) | Update manifest only |
-| New | New path, no fingerprint match | Include in zip |
+| New | New path, no fingerprint match | Include in archive |
 | Deleted | Path in manifest gone, no move match | Mark deleted in manifest |
 
 ### Move Detection
@@ -322,5 +322,5 @@ If a backup is interrupted (power loss, network issue), the next run automatical
 
 s3://<bucket>/
   manifest/manifest.json         # Authoritative manifest (S3 Standard)
-  archives/backup-<date>.zip     # Monthly backup archives (Deep Archive)
+  archives/backup-<date>.tar     # Monthly backup archives (Deep Archive)
 ```

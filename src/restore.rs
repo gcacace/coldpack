@@ -160,40 +160,33 @@ pub fn update_restore_job(path: &Path, job: &RestoreJob) -> Result<()> {
 }
 
 pub fn extract_archive(
-    zip_path: &Path,
+    archive_path: &Path,
     output_dir: &Path,
     manifest: &Manifest,
     is_full_restore: bool,
 ) -> Result<u32> {
-    let file = std::fs::File::open(zip_path)
-        .with_context(|| format!("Failed to open zip: {}", zip_path.display()))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .with_context(|| format!("Failed to read zip: {}", zip_path.display()))?;
+    let file = std::fs::File::open(archive_path)
+        .with_context(|| format!("Failed to open archive: {}", archive_path.display()))?;
+    let mut archive = tar::Archive::new(file);
 
     let mut extracted = 0u32;
 
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let entry_path = entry.name().to_string();
+    for entry in archive.entries()
+        .with_context(|| format!("Failed to read archive: {}", archive_path.display()))?
+    {
+        let mut entry = entry.with_context(|| "Failed to read tar entry")?;
+        let entry_path = entry.path()?.to_string_lossy().to_string();
 
-        if entry.is_dir() {
+        if entry.header().entry_type() != tar::EntryType::Regular {
             continue;
         }
 
-        // Determine output path
         let dest = if is_full_restore {
-            // Check if this file has a newer version in the manifest
             let is_latest = manifest
                 .files
                 .iter()
                 .find(|f| f.path == entry_path)
                 .map(|f| {
-                    // The file in the manifest at this path has its archive_id
-                    // pointing to the archive that contains its latest version.
-                    // We're extracting from a specific zip — we need to check if
-                    // this is indeed the latest version.
-                    // For simplicity: if the file exists at this path in manifest,
-                    // it's the latest if it hasn't been superseded or deleted.
                     f.history.last().is_none_or(|h| {
                         !matches!(h, crate::manifest::HistoryEvent::Deleted { .. })
                     })
@@ -203,7 +196,6 @@ pub fn extract_archive(
             if is_latest {
                 output_dir.join(&entry_path)
             } else {
-                // Place in __versions/ subfolder
                 let versions_dir = output_dir.join("__versions");
                 versions_dir.join(&entry_path)
             }
@@ -240,14 +232,14 @@ mod tests {
             archives: vec![
                 Archive {
                     id: "backup-1".to_string(),
-                    s3_key: "archives/backup-1.zip".to_string(),
+                    s3_key: "archives/backup-1.tar".to_string(),
                     size_bytes: 1000,
                     created_at: Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap(),
                     file_count: 2,
                 },
                 Archive {
                     id: "backup-2".to_string(),
-                    s3_key: "archives/backup-2.zip".to_string(),
+                    s3_key: "archives/backup-2.tar".to_string(),
                     size_bytes: 2000,
                     created_at: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
                     file_count: 1,
@@ -296,7 +288,7 @@ mod tests {
             determine_archives_needed(&manifest, false, None, Some("backup-2")).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "backup-2");
-        assert_eq!(result[0].1, "archives/backup-2.zip");
+        assert_eq!(result[0].1, "archives/backup-2.tar");
     }
 
     #[test]
@@ -334,8 +326,8 @@ mod tests {
     #[test]
     fn test_create_restore_job() {
         let archives = vec![
-            ("backup-1".to_string(), "archives/backup-1.zip".to_string()),
-            ("backup-2".to_string(), "archives/backup-2.zip".to_string()),
+            ("backup-1".to_string(), "archives/backup-1.tar".to_string()),
+            ("backup-2".to_string(), "archives/backup-2.tar".to_string()),
         ];
 
         let job = create_restore_job(RestoreRequestType::All, archives);
@@ -352,7 +344,7 @@ mod tests {
 
         let job = create_restore_job(
             RestoreRequestType::Path("marco/**".to_string()),
-            vec![("backup-1".to_string(), "archives/backup-1.zip".to_string())],
+            vec![("backup-1".to_string(), "archives/backup-1.tar".to_string())],
         );
 
         save_restore_job(profile_dir, &job).unwrap();
@@ -374,12 +366,12 @@ mod tests {
             archives: vec![
                 RestoreArchive {
                     archive_id: "backup-1".to_string(),
-                    s3_key: "archives/backup-1.zip".to_string(),
+                    s3_key: "archives/backup-1.tar".to_string(),
                     status: RestoreStatus::Requested,
                 },
                 RestoreArchive {
                     archive_id: "backup-2".to_string(),
-                    s3_key: "archives/backup-2.zip".to_string(),
+                    s3_key: "archives/backup-2.tar".to_string(),
                     status: RestoreStatus::Available,
                 },
             ],
@@ -409,28 +401,28 @@ mod tests {
         assert!(matches!(loaded.archives[0].status, RestoreStatus::Available));
     }
 
-    fn create_test_zip(dir: &Path, files: &[(&str, &[u8])]) -> PathBuf {
+    fn create_test_tar(dir: &Path, files: &[(&str, &[u8])]) -> PathBuf {
         use std::io::Write;
-        use zip::write::FileOptions;
-        use zip::ZipWriter;
 
-        let zip_path = dir.join("test.zip");
-        let file = std::fs::File::create(&zip_path).unwrap();
-        let mut zip = ZipWriter::new(file);
-        let options = FileOptions::<()>::default();
+        let tar_path = dir.join("test.tar");
+        let file = std::fs::File::create(&tar_path).unwrap();
+        let mut tar = tar::Builder::new(file);
 
         for (name, content) in files {
-            zip.start_file(name.to_string(), options).unwrap();
-            zip.write_all(content).unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, &content[..]).unwrap();
         }
-        zip.finish().unwrap();
-        zip_path
+        tar.finish().unwrap();
+        tar_path
     }
 
     #[test]
     fn test_extract_archive_basic() {
         let dir = TempDir::new().unwrap();
-        let zip_path = create_test_zip(
+        let zip_path = create_test_tar(
             dir.path(),
             &[
                 ("marco/photo1.jpg", b"photo 1 data"),
@@ -453,7 +445,7 @@ mod tests {
     #[test]
     fn test_extract_preserves_structure() {
         let dir = TempDir::new().unwrap();
-        let zip_path = create_test_zip(
+        let zip_path = create_test_tar(
             dir.path(),
             &[
                 ("marco/2026/01/a.jpg", b"a"),
@@ -477,7 +469,7 @@ mod tests {
         use crate::manifest::HistoryEvent;
 
         let dir = TempDir::new().unwrap();
-        let zip_path = create_test_zip(
+        let zip_path = create_test_tar(
             dir.path(),
             &[("marco/deleted.jpg", b"old content")],
         );
@@ -507,7 +499,7 @@ mod tests {
     #[test]
     fn test_extract_full_restore_current_goes_to_normal_path() {
         let dir = TempDir::new().unwrap();
-        let zip_path = create_test_zip(
+        let zip_path = create_test_tar(
             dir.path(),
             &[("marco/current.jpg", b"current content")],
         );

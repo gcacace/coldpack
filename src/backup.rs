@@ -114,20 +114,19 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
         for (group_idx, group) in archive_plan.groups.iter().enumerate() {
             let archive_id = format!("backup-{}-{}", now.to_rfc3339(), group.label);
             let s3_key = format!(
-                "{}backup-{}-{}.zip",
+                "{}backup-{}-{}.tar",
                 config.storage.archive_prefix,
                 now.format("%Y-%m-%dT%H%M%S"),
                 group.label
             );
 
-            let zip_path = tmp_dir.join(format!(
-                "backup-{}-{}.zip",
+            let archive_path = tmp_dir.join(format!(
+                "backup-{}-{}.tar",
                 now.format("%Y-%m-%dT%H%M%S"),
                 group.label
             ));
 
-            let compression = parse_compression(&config.backup.compression);
-            let result = archiver::create_archive_from_group(&zip_path, group, compression, |current, _total| {
+            let result = archiver::create_archive_from_group(&archive_path, group, |current, _total| {
                 archive_bar.set_position(files_done + current as u64);
             })?;
 
@@ -145,10 +144,10 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 group.label,
                 result.size_bytes as f64 / 1024.0 / 1024.0
             );
-            upload_archive(&s3_client, config, profile_dir, &s3_key, &zip_path).await?;
+            upload_archive(&s3_client, config, profile_dir, &s3_key, &archive_path).await?;
 
             // Clean up local zip
-            let _ = std::fs::remove_file(&zip_path);
+            let _ = std::fs::remove_file(&archive_path);
 
             // Update manifest incrementally after each successful upload
             manifest.archives.push(Archive {
@@ -188,12 +187,6 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     })
 }
 
-fn parse_compression(s: &str) -> zip::CompressionMethod {
-    match s {
-        "deflate" => zip::CompressionMethod::Deflated,
-        _ => zip::CompressionMethod::Stored,
-    }
-}
 
 fn parse_storage_class(s: &str) -> StorageClass {
     match s {
@@ -227,7 +220,7 @@ fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
         println!("  No files to archive.");
     } else {
         println!(
-            "  Archives to create: {} ({} files, ~{} before compression)",
+            "  Archives to create: {} ({} files, ~{})",
             archive_plan.groups.len(),
             archive_plan.total_files(),
             format_bytes(archive_plan.total_size()),
@@ -412,9 +405,9 @@ async fn start_new_upload(
     config: &Config,
     profile_dir: &Path,
     s3_key: &str,
-    zip_path: &Path,
+    archive_path: &Path,
     file_size: u64,
-    zip_hash: &str,
+    archive_hash: &str,
 ) -> Result<(PathBuf, UploadCheckpoint)> {
     let resp = client
         .create_multipart_upload()
@@ -433,9 +426,9 @@ async fn start_new_upload(
     let cp = UploadCheckpoint::new(
         upload_id,
         s3_key.to_string(),
-        zip_path.to_path_buf(),
+        archive_path.to_path_buf(),
         file_size,
-        zip_hash.to_string(),
+        archive_hash.to_string(),
     );
     let path = uploader::checkpoint_dir(profile_dir).join(format!("{}.json", &cp.upload_id));
     uploader::save_checkpoint(&path, &cp)?;
@@ -447,20 +440,20 @@ async fn upload_archive(
     config: &Config,
     profile_dir: &Path,
     s3_key: &str,
-    zip_path: &Path,
+    archive_path: &Path,
 ) -> Result<()> {
-    let file_size = std::fs::metadata(zip_path)?.len();
+    let file_size = std::fs::metadata(archive_path)?.len();
 
     // Compute hash of the zip for integrity verification
-    let zip_hash = uploader::hash_file(zip_path)?;
+    let archive_hash = uploader::hash_file(archive_path)?;
 
     // Check for existing checkpoint
     let checkpoint_info = uploader::find_existing_checkpoint(profile_dir, s3_key)?;
 
     let (cp_path, mut checkpoint) = if let Some((path, cp)) = checkpoint_info {
         // Verify the zip hasn't changed since the checkpoint was created
-        if cp.zip_hash.is_empty() || cp.zip_hash != zip_hash {
-            let reason = if cp.zip_hash.is_empty() {
+        if cp.archive_hash.is_empty() || cp.archive_hash != archive_hash {
+            let reason = if cp.archive_hash.is_empty() {
                 "legacy checkpoint without hash"
             } else {
                 "zip content changed since last attempt"
@@ -475,13 +468,13 @@ async fn upload_archive(
                 .await;
             uploader::delete_checkpoint(&path)?;
             // Fall through to create new upload
-            start_new_upload(client, config, profile_dir, s3_key, zip_path, file_size, &zip_hash).await?
+            start_new_upload(client, config, profile_dir, s3_key, archive_path, file_size, &archive_hash).await?
         } else {
             eprintln!("  Resuming upload ({} of {} parts already done)", cp.completed_parts.len(), cp.total_parts);
             (path, cp)
         }
     } else {
-        start_new_upload(client, config, profile_dir, s3_key, zip_path, file_size, &zip_hash).await?
+        start_new_upload(client, config, profile_dir, s3_key, archive_path, file_size, &archive_hash).await?
     };
 
     // Upload parts with progress bar
@@ -510,7 +503,7 @@ async fn upload_archive(
         let length = end - start;
 
         let body = ByteStream::read_from()
-            .path(zip_path)
+            .path(archive_path)
             .offset(start)
             .length(Length::Exact(length))
             .build()
@@ -857,7 +850,7 @@ mod tests {
             manifest,
             &scan,
             "backup-1",
-            "archives/backup-1.zip",
+            "archives/backup-1.tar",
             8000,
             2,
             now,
@@ -880,7 +873,7 @@ mod tests {
             last_backup: Some(Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap()),
             archives: vec![Archive {
                 id: "backup-old".to_string(),
-                s3_key: "archives/old.zip".to_string(),
+                s3_key: "archives/old.tar".to_string(),
                 size_bytes: 5000,
                 created_at: Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap(),
                 file_count: 1,
@@ -908,7 +901,7 @@ mod tests {
             manifest,
             &scan,
             "backup-2",
-            "archives/backup-2.zip",
+            "archives/backup-2.tar",
             6000,
             1,
             now,
@@ -951,7 +944,7 @@ mod tests {
         }]);
 
         let result = apply_changes_to_manifest(
-            manifest, &scan, "backup-2", "archives/backup-2.zip", 0, 0, now,
+            manifest, &scan, "backup-2", "archives/backup-2.tar", 0, 0, now,
         );
 
         // No new archive since no files uploaded
@@ -989,7 +982,7 @@ mod tests {
         }]);
 
         let result = apply_changes_to_manifest(
-            manifest, &scan, "backup-2", "archives/backup-2.zip", 0, 0, now,
+            manifest, &scan, "backup-2", "archives/backup-2.tar", 0, 0, now,
         );
 
         assert_eq!(result.files.len(), 1);
@@ -1063,7 +1056,7 @@ mod tests {
             manifest,
             &scan,
             "backup-2",
-            "archives/backup-2.zip",
+            "archives/backup-2.tar",
             5500,
             2,
             now,
@@ -1117,7 +1110,7 @@ mod tests {
         }]);
 
         let result = apply_changes_to_manifest(
-            manifest, &scan, "backup-2", "archives/backup-2.zip", 0, 0, now,
+            manifest, &scan, "backup-2", "archives/backup-2.tar", 0, 0, now,
         );
 
         // file_count is 0, so no archive added

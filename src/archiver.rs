@@ -1,14 +1,10 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
-use chrono::{Datelike, Timelike};
+use chrono::Datelike;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
-use zip::write::FileOptions;
-use zip::DateTime as ZipDateTime;
-use zip::ZipWriter;
 
 use crate::scanner::FileChange;
 
@@ -40,21 +36,7 @@ impl ArchivePlan {
     }
 }
 
-fn system_time_to_zip_datetime(time: std::time::SystemTime) -> ZipDateTime {
-    let dt: chrono::DateTime<chrono::Utc> = time.into();
-    ZipDateTime::from_date_and_time(
-        dt.year() as u16,
-        dt.month() as u8,
-        dt.day() as u8,
-        dt.hour() as u8,
-        dt.minute() as u8,
-        dt.second() as u8,
-    )
-    .unwrap_or_default()
-}
-
-pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan {
-    // Collect archivable files with their mtime
+pub fn plan_archives(changes: &[FileChange], max_archive_bytes: u64) -> ArchivePlan {
     let mut by_month: BTreeMap<String, Vec<(String, PathBuf, u64)>> = BTreeMap::new();
 
     for change in changes {
@@ -83,7 +65,6 @@ pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan 
             .push((logical_path, disk_path, size));
     }
 
-    // Split each month group by max size
     let mut groups = Vec::new();
 
     for (month, files) in by_month {
@@ -94,8 +75,7 @@ pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan 
         for file in files {
             let file_size = file.2;
 
-            // If adding this file would exceed the cap and we already have files in the group
-            if current_size + file_size > max_zip_bytes && !current_files.is_empty() {
+            if current_size + file_size > max_archive_bytes && !current_files.is_empty() {
                 let label = if part == 1 {
                     month.clone()
                 } else {
@@ -114,7 +94,6 @@ pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan 
             current_files.push(file);
         }
 
-        // Flush remaining files
         if !current_files.is_empty() {
             let label = if part == 1 {
                 month.clone()
@@ -135,7 +114,6 @@ pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan 
 pub fn create_archive_from_group(
     output_path: &Path,
     group: &ArchiveGroup,
-    compression: zip::CompressionMethod,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<ArchiveResult> {
     if let Some(parent) = output_path.parent() {
@@ -145,33 +123,18 @@ pub fn create_archive_from_group(
 
     let file = File::create(output_path)
         .with_context(|| format!("Failed to create archive: {}", output_path.display()))?;
-    let mut zip = ZipWriter::new(file);
+    let mut tar = tar::Builder::new(file);
 
     let total = group.files.len() as u32;
 
     for (i, (logical_path, disk_path, _size)) in group.files.iter().enumerate() {
         on_progress(i as u32 + 1, total);
 
-        let metadata = std::fs::metadata(disk_path)
-            .with_context(|| format!("Failed to read metadata: {}", disk_path.display()))?;
-        let mtime = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let zip_time = system_time_to_zip_datetime(mtime);
-
-        let options = FileOptions::<()>::default()
-            .compression_method(compression)
-            .last_modified_time(zip_time);
-
-        zip.start_file(logical_path.to_string(), options)
+        tar.append_path_with_name(disk_path, logical_path)
             .with_context(|| format!("Failed to add to archive: {}", logical_path))?;
-
-        let mut source = File::open(disk_path)
-            .with_context(|| format!("Failed to open source file: {}", disk_path.display()))?;
-
-        io::copy(&mut source, &mut zip)
-            .with_context(|| format!("Failed to write file to archive: {}", logical_path))?;
     }
 
-    zip.finish().with_context(|| "Failed to finalize archive")?;
+    tar.finish().with_context(|| "Failed to finalize archive")?;
 
     let archive_size = std::fs::metadata(output_path)
         .with_context(|| "Failed to read archive size")?
@@ -187,7 +150,6 @@ pub fn create_archive_from_group(
 pub fn create_archive(
     output_path: &Path,
     changes: &[FileChange],
-    compression: zip::CompressionMethod,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<Option<ArchiveResult>> {
     let files_to_archive: Vec<(&str, &Path)> = changes
@@ -218,33 +180,18 @@ pub fn create_archive(
 
     let file = File::create(output_path)
         .with_context(|| format!("Failed to create archive: {}", output_path.display()))?;
-    let mut zip = ZipWriter::new(file);
+    let mut tar = tar::Builder::new(file);
 
     let total = files_to_archive.len() as u32;
 
     for (i, (logical_path, disk_path)) in files_to_archive.iter().enumerate() {
         on_progress(i as u32 + 1, total);
 
-        let metadata = std::fs::metadata(disk_path)
-            .with_context(|| format!("Failed to read metadata: {}", disk_path.display()))?;
-        let mtime = metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        let zip_time = system_time_to_zip_datetime(mtime);
-
-        let options = FileOptions::<()>::default()
-            .compression_method(compression)
-            .last_modified_time(zip_time);
-
-        zip.start_file(logical_path.to_string(), options)
+        tar.append_path_with_name(disk_path, logical_path)
             .with_context(|| format!("Failed to add to archive: {}", logical_path))?;
-
-        let mut source = File::open(disk_path)
-            .with_context(|| format!("Failed to open source file: {}", disk_path.display()))?;
-
-        io::copy(&mut source, &mut zip)
-            .with_context(|| format!("Failed to write file to archive: {}", logical_path))?;
     }
 
-    zip.finish().with_context(|| "Failed to finalize archive")?;
+    tar.finish().with_context(|| "Failed to finalize archive")?;
 
     let archive_size = std::fs::metadata(output_path)
         .with_context(|| "Failed to read archive size")?
@@ -264,7 +211,6 @@ mod tests {
     use std::fs;
     use std::io::Read;
     use tempfile::TempDir;
-    use zip::ZipArchive;
 
     fn make_new_change(dir: &Path, name: &str, content: &[u8]) -> FileChange {
         let disk_path = dir.join(name);
@@ -285,9 +231,9 @@ mod tests {
     #[test]
     fn test_create_archive_empty_changes() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("test.zip");
+        let output = dir.path().join("test.tar");
 
-        let result = create_archive(&output, &[], zip::CompressionMethod::Stored, |_, _| {}).unwrap();
+        let result = create_archive(&output, &[], |_, _| {}).unwrap();
         assert!(result.is_none());
         assert!(!output.exists());
     }
@@ -295,7 +241,7 @@ mod tests {
     #[test]
     fn test_create_archive_only_moves_and_deletes() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("test.zip");
+        let output = dir.path().join("test.tar");
 
         let changes = vec![
             FileChange::Moved {
@@ -308,38 +254,46 @@ mod tests {
             },
         ];
 
-        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap();
+        let result = create_archive(&output, &changes, |_, _| {}).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_create_archive_single_file() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("test.zip");
+        let output = dir.path().join("test.tar");
         let content = b"hello world photo data";
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", content)];
 
-        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
         assert_eq!(result.file_count, 1);
         assert!(result.size_bytes > 0);
         assert!(output.exists());
 
-        // Verify zip contents
+        // Verify tar contents
         let file = File::open(&output).unwrap();
-        let mut archive = ZipArchive::new(file).unwrap();
-        assert_eq!(archive.len(), 1);
+        let mut archive = tar::Archive::new(file);
+        let entries: Vec<_> = archive.entries().unwrap().collect();
+        assert_eq!(entries.len(), 1);
 
-        let mut entry = archive.by_name("marco/photo.jpg").unwrap();
-        let mut buf = Vec::new();
-        entry.read_to_end(&mut buf).unwrap();
-        assert_eq!(buf, content);
+        // Re-open to read content
+        let file = File::open(&output).unwrap();
+        let mut archive = tar::Archive::new(file);
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().to_string();
+            assert_eq!(path, "marco/photo.jpg");
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).unwrap();
+            assert_eq!(buf, content);
+        }
     }
 
     #[test]
     fn test_create_archive_preserves_directory_structure() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("test.zip");
+        let output = dir.path().join("test.tar");
 
         let changes = vec![
             make_new_change(dir.path(), "2026/05/photo1.jpg", b"photo 1"),
@@ -347,16 +301,15 @@ mod tests {
             make_new_change(dir.path(), "2026/04/photo3.jpg", b"photo 3"),
         ];
 
-        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
         assert_eq!(result.file_count, 3);
 
         let file = File::open(&output).unwrap();
-        let mut archive = ZipArchive::new(file).unwrap();
-        assert_eq!(archive.len(), 3);
-
-        // Verify all paths are preserved
-        let names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+        let mut archive = tar::Archive::new(file);
+        let names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().to_string())
             .collect();
         assert!(names.contains(&"marco/2026/05/photo1.jpg".to_string()));
         assert!(names.contains(&"marco/2026/05/photo2.jpg".to_string()));
@@ -366,7 +319,7 @@ mod tests {
     #[test]
     fn test_create_archive_mixed_changes() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("test.zip");
+        let output = dir.path().join("test.tar");
 
         let disk_path = dir.path().join("modified.jpg");
         fs::write(&disk_path, b"modified content").unwrap();
@@ -391,19 +344,19 @@ mod tests {
             },
         ];
 
-        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
-        // Only New + Modified go into the zip (2 files)
+        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
         assert_eq!(result.file_count, 2);
 
         let file = File::open(&output).unwrap();
-        let archive = ZipArchive::new(file).unwrap();
-        assert_eq!(archive.len(), 2);
+        let mut archive = tar::Archive::new(file);
+        let entries: Vec<_> = archive.entries().unwrap().collect();
+        assert_eq!(entries.len(), 2);
     }
 
     #[test]
     fn test_create_archive_progress_callback() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("test.zip");
+        let output = dir.path().join("test.tar");
 
         let changes = vec![
             make_new_change(dir.path(), "a.jpg", b"aaa"),
@@ -412,7 +365,7 @@ mod tests {
         ];
 
         let mut progress_calls = Vec::new();
-        create_archive(&output, &changes, zip::CompressionMethod::Stored, |current, total| {
+        create_archive(&output, &changes, |current, total| {
             progress_calls.push((current, total));
         })
         .unwrap();
@@ -423,11 +376,11 @@ mod tests {
     #[test]
     fn test_create_archive_creates_parent_dirs() {
         let dir = TempDir::new().unwrap();
-        let output = dir.path().join("nested").join("dir").join("test.zip");
+        let output = dir.path().join("nested").join("dir").join("test.tar");
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", b"data")];
 
-        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
         assert!(result.path.exists());
     }
 
@@ -493,32 +446,25 @@ mod tests {
             },
         ];
 
-        // Cap at 1100 bytes: first two fit (600+600=1200 > 1100 after adding second), so first alone, second+third? no 600+600=1200>1100
-        // Actually with 1100 cap: file1 (600) alone won't trigger split. file2 would make 1200>1100, so split.
-        // Then file2 (600) alone, file3 would make 1200>1100, split again. Result: 3 groups of 1 each.
-        // Let's use a cap of 1500 to get 2 groups: [600, 600] and [600]
         let plan = plan_archives(&changes, 1500);
         assert_eq!(plan.groups.len(), 2);
         assert_eq!(plan.groups[0].label, "2024-03");
-        assert_eq!(plan.groups[0].files.len(), 2); // 600+600=1200 < 1500
+        assert_eq!(plan.groups[0].files.len(), 2);
         assert_eq!(plan.groups[1].label, "2024-03-part2");
-        assert_eq!(plan.groups[1].files.len(), 1); // 600+600+600=1800 > 1500, so third file goes to new group
+        assert_eq!(plan.groups[1].files.len(), 1);
     }
 
     #[test]
     fn test_plan_archives_single_large_file() {
         use chrono::TimeZone;
-        let changes = vec![
-            FileChange::New {
-                logical_path: "huge_video.mp4".to_string(),
-                disk_path: PathBuf::from("/tmp/huge.mp4"),
-                size: 20_000_000_000, // 20 GB
-                mtime: Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap(),
-                fingerprint: "fp1".to_string(),
-            },
-        ];
+        let changes = vec![FileChange::New {
+            logical_path: "huge_video.mp4".to_string(),
+            disk_path: PathBuf::from("/tmp/huge.mp4"),
+            size: 20_000_000_000,
+            mtime: Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap(),
+            fingerprint: "fp1".to_string(),
+        }];
 
-        // Cap at 10 GB: single file exceeds cap, gets its own zip
         let plan = plan_archives(&changes, 10 * 1024 * 1024 * 1024);
         assert_eq!(plan.groups.len(), 1);
         assert_eq!(plan.groups[0].files.len(), 1);
@@ -548,7 +494,7 @@ mod tests {
 
         let plan = plan_archives(&changes, 10 * 1024 * 1024 * 1024);
         assert_eq!(plan.groups.len(), 1);
-        assert_eq!(plan.total_files(), 1); // Only the New file
+        assert_eq!(plan.total_files(), 1);
     }
 
     #[test]

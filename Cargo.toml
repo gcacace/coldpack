@@ -14,7 +14,7 @@ anyhow = "1"
 dirs = "5"
 walkdir = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
 indicatif = "0.17"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"

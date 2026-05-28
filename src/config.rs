@@ -29,8 +29,6 @@ pub struct BackupConfig {
     pub filter: FilterConfig,
     #[serde(default = "default_max_archive_size_mb")]
     pub max_archive_size_mb: u64,
-    #[serde(default = "default_compression")]
-    pub compression: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -94,11 +92,6 @@ fn default_max_archive_size_mb() -> u64 {
     10240 // 10 GB
 }
 
-fn default_compression() -> String {
-    "none".to_string()
-}
-
-pub const VALID_COMPRESSIONS: &[&str] = &["none", "deflate"];
 
 fn default_storage_class() -> String {
     "DEEP_ARCHIVE".to_string()
@@ -203,14 +196,6 @@ fn validate_config(config: &Config) -> Result<()> {
     if cutoff != "start_of_current_month" && cutoff != "none" {
         chrono::NaiveDate::parse_from_str(cutoff, "%Y-%m-%d")
             .with_context(|| format!("Invalid cutoff date '{}': expected 'start_of_current_month', 'none', or YYYY-MM-DD", cutoff))?;
-    }
-
-    if !VALID_COMPRESSIONS.contains(&config.backup.compression.as_str()) {
-        anyhow::bail!(
-            "Invalid compression '{}'. Must be one of: {}",
-            config.backup.compression,
-            VALID_COMPRESSIONS.join(", ")
-        );
     }
 
     if !VALID_STORAGE_CLASSES.contains(&config.storage.storage_class.as_str()) {
@@ -493,7 +478,6 @@ max_io_workers = 0
                 }],
                 filter: FilterConfig::default(),
                 max_archive_size_mb: 10240,
-                compression: "none".to_string(),
             },
             performance: PerformanceConfig::default(),
         };

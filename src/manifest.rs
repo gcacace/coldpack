@@ -149,7 +149,7 @@ mod tests {
             last_backup: Some(Utc.with_ymd_and_hms(2026, 5, 27, 10, 0, 0).unwrap()),
             archives: vec![Archive {
                 id: "backup-2026-05-27T10:00:00Z".to_string(),
-                s3_key: "archives/backup-2026-05-27.zip".to_string(),
+                s3_key: "archives/backup-2026-05-27.tar".to_string(),
                 size_bytes: 1_500_000_000,
                 created_at: Utc.with_ymd_and_hms(2026, 5, 27, 10, 30, 0).unwrap(),
                 file_count: 45,

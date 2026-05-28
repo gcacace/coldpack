@@ -112,18 +112,8 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    println!("\nCompression method:");
-    println!("  1. none (recommended for photos/videos — faster, same size)");
-    println!("  2. deflate (useful for text/documents)");
-    let compression_choice = prompt_with_default("Choice", "1")?;
-    let compression = match compression_choice.as_str() {
-        "2" => "deflate",
-        _ => "none",
-    }
-    .to_string();
-
-    println!("\nMaximum archive (zip) size:");
-    println!("  Files are grouped by month. If a month exceeds this limit, it's split into multiple zips.");
+    println!("\nMaximum archive size:");
+    println!("  Files are grouped by month. If a month exceeds this limit, it's split into multiple archives.");
     let max_archive_str = prompt_with_default("Max archive size in MB", "10240")?;
     let max_archive_size_mb: u64 = max_archive_str.parse().unwrap_or(10240);
 
@@ -148,7 +138,6 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
             sources,
             filter: FilterConfig { cutoff, exclude },
             max_archive_size_mb,
-            compression,
         },
         performance: PerformanceConfig { max_io_workers },
     };
@@ -245,7 +234,6 @@ mod tests {
                     exclude: vec!["@eaDir".to_string()],
                 },
                 max_archive_size_mb: 10240,
-                compression: "none".to_string(),
             },
             performance: PerformanceConfig { max_io_workers: 2 },
         };

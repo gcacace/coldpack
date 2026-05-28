@@ -15,9 +15,9 @@ pub struct UploadCheckpoint {
     pub s3_key: String,
     pub total_parts: u32,
     pub completed_parts: Vec<CompletedPart>,
-    pub local_zip_path: PathBuf,
+    pub local_archive_path: PathBuf,
     #[serde(default)]
-    pub zip_hash: String,
+    pub archive_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -27,15 +27,15 @@ pub struct CompletedPart {
 }
 
 impl UploadCheckpoint {
-    pub fn new(upload_id: String, s3_key: String, local_zip_path: PathBuf, file_size: u64, zip_hash: String) -> Self {
+    pub fn new(upload_id: String, s3_key: String, local_archive_path: PathBuf, file_size: u64, archive_hash: String) -> Self {
         let total_parts = file_size.div_ceil(PART_SIZE) as u32;
         Self {
             upload_id,
             s3_key,
             total_parts,
             completed_parts: Vec::new(),
-            local_zip_path,
-            zip_hash,
+            local_archive_path,
+            archive_hash,
         }
     }
 
@@ -150,8 +150,8 @@ mod tests {
     fn test_checkpoint_new() {
         let cp = UploadCheckpoint::new(
             "upload-123".to_string(),
-            "archives/backup.zip".to_string(),
-            PathBuf::from("/tmp/backup.zip"),
+            "archives/backup.tar".to_string(),
+            PathBuf::from("/tmp/backup.tar"),
             250 * 1024 * 1024, // 250 MB = 3 parts
             "testhash".to_string(),
         );
@@ -165,8 +165,8 @@ mod tests {
     fn test_checkpoint_small_file() {
         let cp = UploadCheckpoint::new(
             "upload-456".to_string(),
-            "archives/small.zip".to_string(),
-            PathBuf::from("/tmp/small.zip"),
+            "archives/small.tar".to_string(),
+            PathBuf::from("/tmp/small.tar"),
             50 * 1024 * 1024, // 50 MB = 1 part
             "testhash".to_string(),
         );
@@ -177,8 +177,8 @@ mod tests {
     fn test_checkpoint_exact_boundary() {
         let cp = UploadCheckpoint::new(
             "upload-789".to_string(),
-            "archives/exact.zip".to_string(),
-            PathBuf::from("/tmp/exact.zip"),
+            "archives/exact.tar".to_string(),
+            PathBuf::from("/tmp/exact.tar"),
             200 * 1024 * 1024, // 200 MB = exactly 2 parts
             "testhash".to_string(),
         );
@@ -190,7 +190,7 @@ mod tests {
         let mut cp = UploadCheckpoint::new(
             "upload-1".to_string(),
             "key".to_string(),
-            PathBuf::from("/tmp/f.zip"),
+            PathBuf::from("/tmp/f.tar"),
             300 * 1024 * 1024,
             "testhash".to_string(),
         );
@@ -213,7 +213,7 @@ mod tests {
         let mut cp = UploadCheckpoint::new(
             "upload-1".to_string(),
             "key".to_string(),
-            PathBuf::from("/tmp/f.zip"),
+            PathBuf::from("/tmp/f.tar"),
             150 * 1024 * 1024,
             "testhash".to_string(),
         );
@@ -230,7 +230,7 @@ mod tests {
         let cp = UploadCheckpoint::new(
             "upload-1".to_string(),
             "key".to_string(),
-            PathBuf::from("/tmp/f.zip"),
+            PathBuf::from("/tmp/f.tar"),
             file_size,
             "testhash".to_string(),
         );
@@ -255,8 +255,8 @@ mod tests {
 
         let mut cp = UploadCheckpoint::new(
             "upload-abc".to_string(),
-            "archives/test.zip".to_string(),
-            PathBuf::from("/tmp/test.zip"),
+            "archives/test.tar".to_string(),
+            PathBuf::from("/tmp/test.tar"),
             200 * 1024 * 1024,
             "testhash".to_string(),
         );
@@ -275,7 +275,7 @@ mod tests {
         let cp = UploadCheckpoint::new(
             "id".to_string(),
             "key".to_string(),
-            PathBuf::from("/tmp/f.zip"),
+            PathBuf::from("/tmp/f.tar"),
             100 * 1024 * 1024,
             "testhash".to_string(),
         );
@@ -317,15 +317,15 @@ mod tests {
 
         let cp = UploadCheckpoint::new(
             "upload-xyz".to_string(),
-            "archives/backup-2026.zip".to_string(),
-            PathBuf::from("/tmp/backup.zip"),
+            "archives/backup-2026.tar".to_string(),
+            PathBuf::from("/tmp/backup.tar"),
             100 * 1024 * 1024,
             "testhash".to_string(),
         );
         let cp_path = cp_dir.join("upload-xyz.json");
         save_checkpoint(&cp_path, &cp).unwrap();
 
-        let found = find_existing_checkpoint(profile_dir, "archives/backup-2026.zip").unwrap();
+        let found = find_existing_checkpoint(profile_dir, "archives/backup-2026.tar").unwrap();
         assert!(found.is_some());
         let (found_path, found_cp) = found.unwrap();
         assert_eq!(found_cp.upload_id, "upload-xyz");
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn test_find_no_matching_checkpoint() {
         let dir = TempDir::new().unwrap();
-        let found = find_existing_checkpoint(dir.path(), "archives/no-match.zip").unwrap();
+        let found = find_existing_checkpoint(dir.path(), "archives/no-match.tar").unwrap();
         assert!(found.is_none());
     }
 
