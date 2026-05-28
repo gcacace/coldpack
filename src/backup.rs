@@ -84,67 +84,90 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
         });
     }
 
-    // 4. Create archive (if there are files to upload)
+    // 4. Plan and create archives (grouped by month, capped by size)
     let now = Utc::now();
-    let archive_id = format!("backup-{}", now.to_rfc3339());
-    let s3_key = format!(
-        "{}backup-{}.zip",
-        config.storage.archive_prefix,
-        now.format("%Y-%m-%dT%H%M%S")
-    );
+    let max_zip_bytes = config.backup.max_archive_size_mb * 1024 * 1024;
+    let archive_plan = archiver::plan_archives(&scan_result.changes, max_zip_bytes);
 
-    let has_uploadable_files = scan_result.changes.iter().any(|c| {
-        matches!(c, FileChange::New { .. } | FileChange::Modified { .. })
-    });
+    let mut total_archive_size: u64 = 0;
+    let mut total_archive_file_count: u32 = 0;
 
-    let mut archive_size = None;
-    let mut archive_file_count = 0u32;
+    // Map logical_path -> archive_id for manifest update
+    let mut file_archive_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut archives_created: Vec<(String, String, u64, u32)> = Vec::new(); // (id, s3_key, size, count)
 
-    if has_uploadable_files {
+    if !archive_plan.groups.is_empty() {
         let tmp_dir = std::env::temp_dir().join("coldpack");
         std::fs::create_dir_all(&tmp_dir)?;
-        let zip_path = tmp_dir.join(format!("backup-{}.zip", now.format("%Y-%m-%dT%H%M%S")));
+        let s3_client = create_s3_client(config).await?;
 
-        // Count files to archive for progress bar
-        let files_to_zip = scan_result.changes.iter().filter(|c| {
-            matches!(c, FileChange::New { .. } | FileChange::Modified { .. })
-        }).count() as u64;
-
-        let archive_bar = ProgressBar::new(files_to_zip);
+        let total_files = archive_plan.total_files() as u64;
+        let archive_bar = ProgressBar::new(total_files);
         archive_bar.set_style(
-            ProgressStyle::with_template("  Archiving [{bar:40.cyan/dim}] {pos}/{len} files  ETA {eta}")
-                .unwrap()
-                .progress_chars("##-"),
+            ProgressStyle::with_template(
+                "  Archiving [{bar:40.cyan/dim}] {pos}/{len} files  ETA {eta}",
+            )
+            .unwrap()
+            .progress_chars("##-"),
         );
 
-        // Create zip
-        let archive_result = archiver::create_archive(&zip_path, &scan_result.changes, |current, _total| {
-            archive_bar.set_position(current as u64);
-        })?;
-        archive_bar.finish_and_clear();
+        let mut files_done: u64 = 0;
 
-        if let Some(result) = archive_result {
-            archive_file_count = result.file_count;
-            archive_size = Some(result.size_bytes);
+        for (group_idx, group) in archive_plan.groups.iter().enumerate() {
+            let archive_id = format!("backup-{}-{}", now.to_rfc3339(), group.label);
+            let s3_key = format!(
+                "{}backup-{}-{}.zip",
+                config.storage.archive_prefix,
+                now.format("%Y-%m-%dT%H%M%S"),
+                group.label
+            );
 
-            // Upload to S3
-            let s3_client = create_s3_client(config).await?;
+            let zip_path = tmp_dir.join(format!(
+                "backup-{}-{}.zip",
+                now.format("%Y-%m-%dT%H%M%S"),
+                group.label
+            ));
+
+            let result = archiver::create_archive_from_group(&zip_path, group, |current, _total| {
+                archive_bar.set_position(files_done + current as u64);
+            })?;
+
+            files_done += result.file_count as u64;
+            total_archive_size += result.size_bytes;
+            total_archive_file_count += result.file_count;
+
+            archive_bar.set_position(files_done);
+
+            // Upload
+            eprintln!(
+                "  Uploading archive {}/{}: {} ({:.1} MB)",
+                group_idx + 1,
+                archive_plan.groups.len(),
+                group.label,
+                result.size_bytes as f64 / 1024.0 / 1024.0
+            );
             upload_archive(&s3_client, config, profile_dir, &s3_key, &zip_path).await?;
+
+            // Track which files are in this archive
+            for (logical_path, _, _) in &group.files {
+                file_archive_map.insert(logical_path.clone(), archive_id.clone());
+            }
+            archives_created.push((archive_id, s3_key, result.size_bytes, result.file_count));
 
             // Clean up local zip
             let _ = std::fs::remove_file(&zip_path);
         }
+
+        archive_bar.finish_and_clear();
     }
 
     // 5. Update manifest
     eprintln!("  Updating manifest...");
-    let updated_manifest = apply_changes_to_manifest(
+    let updated_manifest = apply_changes_to_manifest_multi(
         manifest,
         &scan_result,
-        &archive_id,
-        &s3_key,
-        archive_size.unwrap_or(0),
-        archive_file_count,
+        &archives_created,
+        &file_archive_map,
         now,
     );
 
@@ -154,8 +177,8 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
 
     Ok(BackupReport {
         scan_stats: scan_result.stats,
-        archive_size,
-        archive_file_count,
+        archive_size: if total_archive_size > 0 { Some(total_archive_size) } else { None },
+        archive_file_count: total_archive_file_count,
         manifest_updated: true,
     })
 }
@@ -171,15 +194,8 @@ fn parse_storage_class(s: &str) -> StorageClass {
 }
 
 fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
-    let new_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
-        FileChange::New { logical_path, size, .. } => Some((logical_path.as_str(), *size)),
-        _ => None,
-    }).collect();
-
-    let modified_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
-        FileChange::Modified { logical_path, size, .. } => Some((logical_path.as_str(), *size)),
-        _ => None,
-    }).collect();
+    let max_zip_bytes = config.backup.max_archive_size_mb * 1024 * 1024;
+    let archive_plan = archiver::plan_archives(&scan_result.changes, max_zip_bytes);
 
     let moved_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
         FileChange::Moved { logical_path, old_path, .. } => Some((old_path.as_str(), logical_path.as_str())),
@@ -191,85 +207,53 @@ fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
         _ => None,
     }).collect();
 
-    let estimated_bytes: u64 = new_files.iter().chain(modified_files.iter())
-        .map(|(_, size)| size)
-        .sum();
-
-    let now = Utc::now();
-    let s3_key = format!(
-        "{}backup-{}.zip",
-        config.storage.archive_prefix,
-        now.format("%Y-%m-%dT%H%M%S")
-    );
-    let parts = if estimated_bytes > 0 {
-        estimated_bytes.div_ceil(100 * 1024 * 1024)
-    } else {
-        0
-    };
-
     println!("\nDry run — backup plan:");
-    println!("  Archive: {}", s3_key);
     println!("  Storage class: {}", config.storage.storage_class);
-    println!(
-        "  Files to archive: {} ({} new, {} modified)",
-        new_files.len() + modified_files.len(),
-        new_files.len(),
-        modified_files.len()
-    );
-    println!("  Estimated size: ~{} (before compression)", format_bytes(estimated_bytes));
-    if parts > 0 {
-        println!("  Upload parts: ~{} (100 MB each)", parts);
-    }
-    if !moved_files.is_empty() {
-        println!("  Moves to record: {}", moved_files.len());
-    }
-    if !deleted_files.is_empty() {
-        println!("  Deletions to record: {}", deleted_files.len());
-    }
+    println!("  Max archive size: {} MB", config.backup.max_archive_size_mb);
 
-    if !new_files.is_empty() {
-        println!("\nNew files:");
-        print_file_list(&new_files, 20);
-    }
-
-    if !modified_files.is_empty() {
-        println!("\nModified files:");
-        print_file_list(&modified_files, 20);
+    if archive_plan.groups.is_empty() {
+        println!("  No files to archive.");
+    } else {
+        println!(
+            "  Archives to create: {} ({} files, ~{} before compression)",
+            archive_plan.groups.len(),
+            archive_plan.total_files(),
+            format_bytes(archive_plan.total_size()),
+        );
+        println!();
+        for group in &archive_plan.groups {
+            println!(
+                "    {}: {} ({} files)",
+                group.label,
+                format_bytes(group.total_size),
+                group.files.len()
+            );
+        }
     }
 
     if !moved_files.is_empty() {
-        println!("\nMoved files:");
+        println!("\n  Moves to record: {}", moved_files.len());
         for (i, (from, to)) in moved_files.iter().enumerate() {
-            if i >= 20 {
-                println!("  ... and {} more", moved_files.len() - 20);
+            if i >= 10 {
+                println!("    ... and {} more", moved_files.len() - 10);
                 break;
             }
-            println!("  {} -> {}", from, to);
+            println!("    {} -> {}", from, to);
         }
     }
 
     if !deleted_files.is_empty() {
-        println!("\nDeleted files:");
+        println!("\n  Deletions to record: {}", deleted_files.len());
         for (i, path) in deleted_files.iter().enumerate() {
-            if i >= 20 {
-                println!("  ... and {} more", deleted_files.len() - 20);
+            if i >= 10 {
+                println!("    ... and {} more", deleted_files.len() - 10);
                 break;
             }
-            println!("  {}", path);
+            println!("    {}", path);
         }
     }
 
     println!("\n(dry run — no changes made)");
-}
-
-fn print_file_list(files: &[(&str, u64)], max: usize) {
-    for (i, (path, size)) in files.iter().enumerate() {
-        if i >= max {
-            println!("  ... and {} more", files.len() - max);
-            break;
-        }
-        println!("  {} ({})", path, format_bytes(*size));
-    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -498,6 +482,109 @@ async fn save_manifest(config: &Config, profile_dir: &Path, manifest: &Manifest)
         .with_context(|| "Failed to upload manifest to S3")?;
 
     Ok(())
+}
+
+pub fn apply_changes_to_manifest_multi(
+    mut manifest: Manifest,
+    scan_result: &ScanResult,
+    archives_created: &[(String, String, u64, u32)], // (id, s3_key, size, count)
+    file_archive_map: &std::collections::HashMap<String, String>,
+    now: DateTime<Utc>,
+) -> Manifest {
+    // Add archive entries
+    for (id, s3_key, size, count) in archives_created {
+        manifest.archives.push(Archive {
+            id: id.clone(),
+            s3_key: s3_key.clone(),
+            size_bytes: *size,
+            created_at: now,
+            file_count: *count,
+        });
+    }
+
+    // Build a mutable index of existing files by path
+    let mut file_map: std::collections::HashMap<String, usize> = manifest
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.path.clone(), i))
+        .collect();
+
+    for change in &scan_result.changes {
+        match change {
+            FileChange::New {
+                logical_path,
+                size,
+                mtime,
+                fingerprint,
+                ..
+            } => {
+                let archive_id = file_archive_map
+                    .get(logical_path)
+                    .cloned()
+                    .unwrap_or_default();
+                manifest.files.push(FileEntry {
+                    path: logical_path.clone(),
+                    size: *size,
+                    mtime: *mtime,
+                    fingerprint: fingerprint.clone(),
+                    archive_id,
+                    history: vec![],
+                });
+                file_map.insert(logical_path.clone(), manifest.files.len() - 1);
+            }
+            FileChange::Modified {
+                logical_path,
+                size,
+                mtime,
+                fingerprint,
+                ..
+            } => {
+                let archive_id = file_archive_map
+                    .get(logical_path)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(&idx) = file_map.get(logical_path.as_str()) {
+                    let entry = &mut manifest.files[idx];
+                    entry.history.push(HistoryEvent::Added {
+                        archive_id: entry.archive_id.clone(),
+                        mtime: entry.mtime,
+                        size: entry.size,
+                    });
+                    entry.size = *size;
+                    entry.mtime = *mtime;
+                    entry.fingerprint = fingerprint.clone();
+                    entry.archive_id = archive_id;
+                }
+            }
+            FileChange::Moved {
+                logical_path,
+                old_path,
+                fingerprint,
+            } => {
+                if let Some(&idx) = file_map.get(old_path.as_str()) {
+                    let entry = &mut manifest.files[idx];
+                    entry.history.push(HistoryEvent::Moved {
+                        from: old_path.clone(),
+                        at: now,
+                    });
+                    entry.path = logical_path.clone();
+                    entry.fingerprint = fingerprint.clone();
+                    file_map.remove(old_path.as_str());
+                    file_map.insert(logical_path.clone(), idx);
+                }
+            }
+            FileChange::Deleted { logical_path } => {
+                if let Some(&idx) = file_map.get(logical_path.as_str()) {
+                    let entry = &mut manifest.files[idx];
+                    entry.history.push(HistoryEvent::Deleted { at: now });
+                }
+            }
+        }
+    }
+
+    manifest.last_backup = Some(now);
+    manifest
 }
 
 pub fn apply_changes_to_manifest(

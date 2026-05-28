@@ -27,6 +27,8 @@ pub struct BackupConfig {
     pub sources: Vec<SourceConfig>,
     #[serde(default)]
     pub filter: FilterConfig,
+    #[serde(default = "default_max_archive_size_mb")]
+    pub max_archive_size_mb: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -84,6 +86,10 @@ fn default_manifest_prefix() -> String {
 
 fn default_cutoff() -> String {
     "start_of_current_month".to_string()
+}
+
+fn default_max_archive_size_mb() -> u64 {
+    10240 // 10 GB
 }
 
 fn default_storage_class() -> String {
@@ -470,6 +476,7 @@ max_io_workers = 0
                     path: PathBuf::from("/data/photos"),
                 }],
                 filter: FilterConfig::default(),
+                max_archive_size_mb: 10240,
             },
             performance: PerformanceConfig::default(),
         };

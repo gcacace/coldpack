@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
+use chrono::Datelike;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +15,151 @@ pub struct ArchiveResult {
     pub path: PathBuf,
     pub size_bytes: u64,
     pub file_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArchivePlan {
+    pub groups: Vec<ArchiveGroup>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArchiveGroup {
+    pub label: String,
+    pub files: Vec<(String, PathBuf, u64)>,
+    pub total_size: u64,
+}
+
+impl ArchivePlan {
+    pub fn total_files(&self) -> usize {
+        self.groups.iter().map(|g| g.files.len()).sum()
+    }
+
+    pub fn total_size(&self) -> u64 {
+        self.groups.iter().map(|g| g.total_size).sum()
+    }
+}
+
+pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan {
+    // Collect archivable files with their mtime
+    let mut by_month: BTreeMap<String, Vec<(String, PathBuf, u64)>> = BTreeMap::new();
+
+    for change in changes {
+        let (logical_path, disk_path, size, mtime) = match change {
+            FileChange::New {
+                logical_path,
+                disk_path,
+                size,
+                mtime,
+                ..
+            } => (logical_path.clone(), disk_path.clone(), *size, *mtime),
+            FileChange::Modified {
+                logical_path,
+                disk_path,
+                size,
+                mtime,
+                ..
+            } => (logical_path.clone(), disk_path.clone(), *size, *mtime),
+            _ => continue,
+        };
+
+        let month_key = format!("{:04}-{:02}", mtime.year(), mtime.month());
+        by_month
+            .entry(month_key)
+            .or_default()
+            .push((logical_path, disk_path, size));
+    }
+
+    // Split each month group by max size
+    let mut groups = Vec::new();
+
+    for (month, files) in by_month {
+        let mut current_files: Vec<(String, PathBuf, u64)> = Vec::new();
+        let mut current_size: u64 = 0;
+        let mut part = 1u32;
+
+        for file in files {
+            let file_size = file.2;
+
+            // If adding this file would exceed the cap and we already have files in the group
+            if current_size + file_size > max_zip_bytes && !current_files.is_empty() {
+                let label = if part == 1 {
+                    month.clone()
+                } else {
+                    format!("{}-part{}", month, part)
+                };
+                groups.push(ArchiveGroup {
+                    label,
+                    total_size: current_size,
+                    files: std::mem::take(&mut current_files),
+                });
+                part += 1;
+                current_size = 0;
+            }
+
+            current_size += file_size;
+            current_files.push(file);
+        }
+
+        // Flush remaining files
+        if !current_files.is_empty() {
+            let label = if part == 1 {
+                month.clone()
+            } else {
+                format!("{}-part{}", month, part)
+            };
+            groups.push(ArchiveGroup {
+                label,
+                total_size: current_size,
+                files: current_files,
+            });
+        }
+    }
+
+    ArchivePlan { groups }
+}
+
+pub fn create_archive_from_group(
+    output_path: &Path,
+    group: &ArchiveGroup,
+    mut on_progress: impl FnMut(u32, u32),
+) -> Result<ArchiveResult> {
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create archive directory: {}", parent.display()))?;
+    }
+
+    let file = File::create(output_path)
+        .with_context(|| format!("Failed to create archive: {}", output_path.display()))?;
+    let mut zip = ZipWriter::new(file);
+
+    let total = group.files.len() as u32;
+    let options = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for (i, (logical_path, disk_path, _size)) in group.files.iter().enumerate() {
+        on_progress(i as u32 + 1, total);
+
+        zip.start_file(logical_path.to_string(), options)
+            .with_context(|| format!("Failed to add to archive: {}", logical_path))?;
+
+        let mut source = File::open(disk_path)
+            .with_context(|| format!("Failed to open source file: {}", disk_path.display()))?;
+
+        io::copy(&mut source, &mut zip)
+            .with_context(|| format!("Failed to write file to archive: {}", logical_path))?;
+    }
+
+    zip.finish().with_context(|| "Failed to finalize archive")?;
+
+    let archive_size = std::fs::metadata(output_path)
+        .with_context(|| "Failed to read archive size")?
+        .len();
+
+    Ok(ArchiveResult {
+        path: output_path.to_path_buf(),
+        size_bytes: archive_size,
+        file_count: total,
+    })
 }
 
 pub fn create_archive(
@@ -252,5 +399,132 @@ mod tests {
 
         let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
         assert!(result.path.exists());
+    }
+
+    #[test]
+    fn test_plan_archives_groups_by_month() {
+        use chrono::TimeZone;
+        let changes = vec![
+            FileChange::New {
+                logical_path: "a/jan.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/jan.jpg"),
+                size: 1000,
+                mtime: Utc.with_ymd_and_hms(2024, 1, 15, 0, 0, 0).unwrap(),
+                fingerprint: "fp1".to_string(),
+            },
+            FileChange::New {
+                logical_path: "a/jan2.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/jan2.jpg"),
+                size: 2000,
+                mtime: Utc.with_ymd_and_hms(2024, 1, 20, 0, 0, 0).unwrap(),
+                fingerprint: "fp2".to_string(),
+            },
+            FileChange::New {
+                logical_path: "a/feb.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/feb.jpg"),
+                size: 3000,
+                mtime: Utc.with_ymd_and_hms(2024, 2, 10, 0, 0, 0).unwrap(),
+                fingerprint: "fp3".to_string(),
+            },
+        ];
+
+        let plan = plan_archives(&changes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(plan.groups.len(), 2);
+        assert_eq!(plan.groups[0].label, "2024-01");
+        assert_eq!(plan.groups[0].files.len(), 2);
+        assert_eq!(plan.groups[1].label, "2024-02");
+        assert_eq!(plan.groups[1].files.len(), 1);
+    }
+
+    #[test]
+    fn test_plan_archives_splits_by_size() {
+        use chrono::TimeZone;
+        let changes = vec![
+            FileChange::New {
+                logical_path: "a.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/a.jpg"),
+                size: 600,
+                mtime: Utc.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap(),
+                fingerprint: "fp1".to_string(),
+            },
+            FileChange::New {
+                logical_path: "b.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/b.jpg"),
+                size: 600,
+                mtime: Utc.with_ymd_and_hms(2024, 3, 2, 0, 0, 0).unwrap(),
+                fingerprint: "fp2".to_string(),
+            },
+            FileChange::New {
+                logical_path: "c.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/c.jpg"),
+                size: 600,
+                mtime: Utc.with_ymd_and_hms(2024, 3, 3, 0, 0, 0).unwrap(),
+                fingerprint: "fp3".to_string(),
+            },
+        ];
+
+        // Cap at 1100 bytes: first two fit (600+600=1200 > 1100 after adding second), so first alone, second+third? no 600+600=1200>1100
+        // Actually with 1100 cap: file1 (600) alone won't trigger split. file2 would make 1200>1100, so split.
+        // Then file2 (600) alone, file3 would make 1200>1100, split again. Result: 3 groups of 1 each.
+        // Let's use a cap of 1500 to get 2 groups: [600, 600] and [600]
+        let plan = plan_archives(&changes, 1500);
+        assert_eq!(plan.groups.len(), 2);
+        assert_eq!(plan.groups[0].label, "2024-03");
+        assert_eq!(plan.groups[0].files.len(), 2); // 600+600=1200 < 1500
+        assert_eq!(plan.groups[1].label, "2024-03-part2");
+        assert_eq!(plan.groups[1].files.len(), 1); // 600+600+600=1800 > 1500, so third file goes to new group
+    }
+
+    #[test]
+    fn test_plan_archives_single_large_file() {
+        use chrono::TimeZone;
+        let changes = vec![
+            FileChange::New {
+                logical_path: "huge_video.mp4".to_string(),
+                disk_path: PathBuf::from("/tmp/huge.mp4"),
+                size: 20_000_000_000, // 20 GB
+                mtime: Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap(),
+                fingerprint: "fp1".to_string(),
+            },
+        ];
+
+        // Cap at 10 GB: single file exceeds cap, gets its own zip
+        let plan = plan_archives(&changes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].files.len(), 1);
+        assert_eq!(plan.groups[0].total_size, 20_000_000_000);
+    }
+
+    #[test]
+    fn test_plan_archives_skips_non_archivable() {
+        use chrono::TimeZone;
+        let changes = vec![
+            FileChange::New {
+                logical_path: "new.jpg".to_string(),
+                disk_path: PathBuf::from("/tmp/new.jpg"),
+                size: 1000,
+                mtime: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+                fingerprint: "fp1".to_string(),
+            },
+            FileChange::Moved {
+                logical_path: "moved.jpg".to_string(),
+                old_path: "old.jpg".to_string(),
+                fingerprint: "fp2".to_string(),
+            },
+            FileChange::Deleted {
+                logical_path: "deleted.jpg".to_string(),
+            },
+        ];
+
+        let plan = plan_archives(&changes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.total_files(), 1); // Only the New file
+    }
+
+    #[test]
+    fn test_plan_archives_empty() {
+        let changes: Vec<FileChange> = vec![];
+        let plan = plan_archives(&changes, 10 * 1024 * 1024 * 1024);
+        assert_eq!(plan.groups.len(), 0);
     }
 }

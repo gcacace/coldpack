@@ -112,6 +112,11 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
+    println!("\nMaximum archive (zip) size:");
+    println!("  Files are grouped by month. If a month exceeds this limit, it's split into multiple zips.");
+    let max_archive_str = prompt_with_default("Max archive size in MB", "10240")?;
+    let max_archive_size_mb: u64 = max_archive_str.parse().unwrap_or(10240);
+
     // === Performance ===
     println!("\n=== Performance ===");
     let workers_str = prompt_with_default("Max I/O workers for fingerprinting", "2")?;
@@ -132,6 +137,7 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         backup: BackupConfig {
             sources,
             filter: FilterConfig { cutoff, exclude },
+            max_archive_size_mb,
         },
         performance: PerformanceConfig { max_io_workers },
     };
@@ -227,6 +233,7 @@ mod tests {
                     cutoff: "start_of_current_month".to_string(),
                     exclude: vec!["@eaDir".to_string()],
                 },
+                max_archive_size_mb: 10240,
             },
             performance: PerformanceConfig { max_io_workers: 2 },
         };
