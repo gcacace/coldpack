@@ -6,6 +6,7 @@ use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, StorageClass};
 use aws_sdk_s3::Client;
 use aws_smithy_types::byte_stream::Length;
 use chrono::{DateTime, Utc};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
@@ -41,8 +42,37 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     // 2. Load manifest (local cache or S3)
     let manifest = load_or_create_manifest(config, profile_dir).await?;
 
-    // 3. Scan
-    let scan_result = scanner::scan(&config.backup.sources, &manifest, cutoff, &config.backup.filter.exclude)?;
+    // 3. Scan with progress spinner
+    let scan_spinner = ProgressBar::new_spinner();
+    scan_spinner.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    scan_spinner.set_message("Scanning sources...");
+    scan_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let scan_result = scanner::scan(
+        &config.backup.sources,
+        &manifest,
+        cutoff,
+        &config.backup.filter.exclude,
+        |stats| {
+            scan_spinner.set_message(format!(
+                "Scanning... {} files ({} excluded, {} skipped by cutoff)",
+                stats.total_files_scanned, stats.skipped_by_exclude, stats.skipped_by_cutoff
+            ));
+        },
+    )?;
+
+    scan_spinner.finish_with_message(format!(
+        "Scanned {} files ({} new, {} modified, {} moved, {} excluded)",
+        scan_result.stats.total_files_scanned,
+        scan_result.stats.new,
+        scan_result.stats.modified,
+        scan_result.stats.moved,
+        scan_result.stats.skipped_by_exclude,
+    ));
 
     if options.dry_run {
         return Ok(BackupReport {
@@ -74,10 +104,23 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
         std::fs::create_dir_all(&tmp_dir)?;
         let zip_path = tmp_dir.join(format!("backup-{}.zip", now.format("%Y-%m-%dT%H%M%S")));
 
+        // Count files to archive for progress bar
+        let files_to_zip = scan_result.changes.iter().filter(|c| {
+            matches!(c, FileChange::New { .. } | FileChange::Modified { .. })
+        }).count() as u64;
+
+        let archive_bar = ProgressBar::new(files_to_zip);
+        archive_bar.set_style(
+            ProgressStyle::with_template("  Archiving [{bar:40.cyan/dim}] {pos}/{len} files  ETA {eta}")
+                .unwrap()
+                .progress_chars("##-"),
+        );
+
         // Create zip
-        let archive_result = archiver::create_archive(&zip_path, &scan_result.changes, |current, total| {
-            eprintln!("  Archiving file {}/{}", current, total);
+        let archive_result = archiver::create_archive(&zip_path, &scan_result.changes, |current, _total| {
+            archive_bar.set_position(current as u64);
         })?;
+        archive_bar.finish_and_clear();
 
         if let Some(result) = archive_result {
             archive_file_count = result.file_count;
@@ -93,6 +136,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     }
 
     // 5. Update manifest
+    eprintln!("  Updating manifest...");
     let updated_manifest = apply_changes_to_manifest(
         manifest,
         &scan_result,
@@ -105,6 +149,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
 
     // 6. Save manifest locally and to S3
     save_manifest(config, profile_dir, &updated_manifest).await?;
+    eprintln!("  Manifest saved ({} files tracked).", updated_manifest.files.len());
 
     Ok(BackupReport {
         scan_stats: scan_result.stats,
@@ -196,7 +241,7 @@ async fn upload_archive(
     let checkpoint_info = uploader::find_existing_checkpoint(profile_dir, s3_key)?;
 
     let (cp_path, mut checkpoint) = if let Some((path, cp)) = checkpoint_info {
-        eprintln!("  Resuming upload from checkpoint ({} parts done)", cp.completed_parts.len());
+        eprintln!("  Resuming upload ({} of {} parts already done)", cp.completed_parts.len(), cp.total_parts);
         (path, cp)
     } else {
         // Initiate new multipart upload
@@ -225,17 +270,30 @@ async fn upload_archive(
         (path, cp)
     };
 
-    // Upload parts
+    // Upload parts with progress bar
+    let upload_bar = ProgressBar::new(file_size);
+    upload_bar.set_style(
+        ProgressStyle::with_template(
+            "  Uploading [{bar:40.cyan/dim}] {bytes}/{total_bytes}  ETA {eta}"
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+
+    // Account for already-completed parts
+    let already_uploaded: u64 = checkpoint
+        .completed_parts
+        .iter()
+        .map(|p| {
+            let (start, end) = checkpoint.part_byte_range(p.part_number, file_size);
+            end - start
+        })
+        .sum();
+    upload_bar.set_position(already_uploaded);
+
     while let Some(part_number) = checkpoint.next_part_number() {
         let (start, end) = checkpoint.part_byte_range(part_number, file_size);
         let length = end - start;
-
-        eprintln!(
-            "  Uploading part {}/{} ({:.1} MB)",
-            part_number,
-            checkpoint.total_parts,
-            length as f64 / 1024.0 / 1024.0
-        );
 
         let body = ByteStream::read_from()
             .path(zip_path)
@@ -264,7 +322,10 @@ async fn upload_archive(
 
         checkpoint.record_part(part_number, etag);
         uploader::save_checkpoint(&cp_path, &checkpoint)?;
+        upload_bar.set_position(already_uploaded + end);
     }
+
+    upload_bar.finish_and_clear();
 
     // Complete multipart upload
     let completed_parts: Vec<CompletedPart> = {

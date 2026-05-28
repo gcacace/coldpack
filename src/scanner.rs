@@ -134,6 +134,7 @@ pub fn scan(
     manifest: &Manifest,
     cutoff: Option<DateTime<Utc>>,
     exclude: &[String],
+    mut on_progress: impl FnMut(&ScanStats),
 ) -> Result<ScanResult> {
     let mut stats = ScanStats::default();
     let mut changes = Vec::new();
@@ -180,6 +181,7 @@ pub fn scan(
             }
 
             stats.total_files_scanned += 1;
+            on_progress(&stats);
 
             let disk_path = entry.path().to_path_buf();
             let relative = disk_path
@@ -364,7 +366,7 @@ mod tests {
         let sources = vec![make_source(&dir, "photos")];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.total_files_scanned, 0);
         assert!(result.changes.is_empty());
     }
@@ -378,7 +380,7 @@ mod tests {
         let sources = vec![make_source(&dir, "marco")];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.new, 2);
         assert_eq!(result.stats.total_files_scanned, 2);
 
@@ -416,7 +418,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.unchanged, 1);
         assert_eq!(result.stats.new, 0);
         assert!(result.changes.is_empty());
@@ -442,7 +444,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.modified, 1);
         assert!(matches!(&result.changes[0], FileChange::Modified { logical_path, .. } if logical_path == "marco/photo.jpg"));
     }
@@ -471,7 +473,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.moved, 1);
         assert!(matches!(
             &result.changes[0],
@@ -500,7 +502,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.deleted, 1);
         assert!(matches!(
             &result.changes[0],
@@ -531,7 +533,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.moved, 1);
         assert_eq!(result.stats.deleted, 0);
         // The old path shouldn't show as deleted since it was identified as the source of a move
@@ -553,7 +555,7 @@ mod tests {
 
         // Cutoff: only files before 2025-01-01
         let cutoff = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
-        let result = scan(&sources, &manifest, Some(cutoff), &[]).unwrap();
+        let result = scan(&sources, &manifest, Some(cutoff), &[], |_| {}).unwrap();
 
         assert_eq!(result.stats.total_files_scanned, 2);
         assert_eq!(result.stats.skipped_by_cutoff, 1);
@@ -585,7 +587,7 @@ mod tests {
         ];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.new, 2);
 
         let paths: Vec<&str> = result
@@ -608,7 +610,7 @@ mod tests {
         }];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None, &[]);
+        let result = scan(&sources, &manifest, None, &[], |_| {});
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
@@ -648,7 +650,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None, &[]).unwrap();
+        let result = scan(&sources, &manifest, None, &[], |_| {}).unwrap();
         assert_eq!(result.stats.moved, 1);
         assert_eq!(result.stats.deleted, 0);
         assert!(matches!(
@@ -669,7 +671,7 @@ mod tests {
         let manifest = empty_manifest();
         let exclude = vec!["@eaDir".to_string()];
 
-        let result = scan(&sources, &manifest, None, &exclude).unwrap();
+        let result = scan(&sources, &manifest, None, &exclude, |_| {}).unwrap();
         assert_eq!(result.stats.new, 1);
         assert_eq!(result.stats.skipped_by_exclude, 2);
 
@@ -695,7 +697,7 @@ mod tests {
         let manifest = empty_manifest();
         let exclude = vec!["*.tmp".to_string()];
 
-        let result = scan(&sources, &manifest, None, &exclude).unwrap();
+        let result = scan(&sources, &manifest, None, &exclude, |_| {}).unwrap();
         assert_eq!(result.stats.new, 1);
         assert_eq!(result.stats.skipped_by_exclude, 2);
     }
@@ -716,7 +718,7 @@ mod tests {
             ".DS_Store".to_string(),
         ];
 
-        let result = scan(&sources, &manifest, None, &exclude).unwrap();
+        let result = scan(&sources, &manifest, None, &exclude, |_| {}).unwrap();
         assert_eq!(result.stats.new, 1);
         assert_eq!(result.stats.skipped_by_exclude, 3);
     }
