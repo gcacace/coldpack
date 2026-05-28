@@ -179,6 +179,40 @@ coldpack --profile work-laptop status
 
 Each profile is fully isolated — its own config, manifest cache, upload checkpoints, and restore state.
 
+### Example Profile Configuration
+
+`~/.coldpack/profiles/default/config.toml`:
+
+```toml
+[storage]
+bucket = "my-family-backup"
+region = "eu-west-1"
+archive_prefix = "archives/"
+manifest_prefix = "manifest/"
+storage_class = "DEEP_ARCHIVE"
+
+[[backup.sources]]
+name = "marco"
+path = "/volume1/homes/marco/Photos"
+
+[[backup.sources]]
+name = "laura"
+path = "/volume1/homes/laura/Photos"
+
+[[backup.sources]]
+name = "common"
+path = "/volume1/photos/family"
+
+[backup.filter]
+cutoff = "start_of_current_month"
+exclude = ["@eaDir", "#recycle", ".DS_Store", "Thumbs.db"]
+
+[performance]
+max_io_workers = 2
+```
+
+**Storage class options:** `STANDARD` (testing), `STANDARD_IA`, `GLACIER_IR`, `GLACIER`, `DEEP_ARCHIVE` (production).
+
 ## Commands
 
 ### `coldpack setup [--profile <name>]`
