@@ -21,6 +21,10 @@ struct Cli {
     #[arg(long, global = true, default_value = "default")]
     profile: String,
 
+    /// Show detailed output (skipped files, reasons)
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -113,6 +117,7 @@ async fn main() -> Result<()> {
             let options = backup::BackupOptions {
                 dry_run,
                 cutoff_override: cutoff,
+                verbose: cli.verbose,
             };
             let report = backup::run_backup(&cfg, &profile_dir, &options).await?;
 

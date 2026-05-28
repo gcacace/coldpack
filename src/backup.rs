@@ -22,6 +22,7 @@ use crate::uploader::{self, UploadCheckpoint};
 pub struct BackupOptions {
     pub dry_run: bool,
     pub cutoff_override: Option<String>,
+    pub verbose: bool,
 }
 
 pub struct BackupReport {
@@ -52,11 +53,13 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     scan_spinner.set_message("Scanning sources...");
     scan_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
+    let verbose = options.verbose;
     let scan_result = scanner::scan(
         &config.backup.sources,
         &manifest,
         cutoff,
         &config.backup.filter.exclude,
+        verbose,
         |stats| {
             scan_spinner.set_message(format!(
                 "Scanning... {} files ({} excluded, {} skipped by cutoff)",
