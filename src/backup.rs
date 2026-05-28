@@ -7,9 +7,7 @@ use aws_sdk_s3::Client;
 use aws_smithy_types::byte_stream::Length;
 use chrono::{DateTime, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::Path;
-#[cfg(test)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::archiver;
 use crate::config::Config;
@@ -338,6 +336,41 @@ async fn download_manifest_from_s3(config: &Config) -> Result<Manifest> {
     Ok(manifest)
 }
 
+async fn start_new_upload(
+    client: &Client,
+    config: &Config,
+    profile_dir: &Path,
+    s3_key: &str,
+    zip_path: &Path,
+    file_size: u64,
+    zip_hash: &str,
+) -> Result<(PathBuf, UploadCheckpoint)> {
+    let resp = client
+        .create_multipart_upload()
+        .bucket(&config.storage.bucket)
+        .key(s3_key)
+        .storage_class(parse_storage_class(&config.storage.storage_class))
+        .send()
+        .await
+        .with_context(|| "Failed to initiate multipart upload")?;
+
+    let upload_id = resp
+        .upload_id()
+        .ok_or_else(|| anyhow::anyhow!("No upload ID returned"))?
+        .to_string();
+
+    let cp = UploadCheckpoint::new(
+        upload_id,
+        s3_key.to_string(),
+        zip_path.to_path_buf(),
+        file_size,
+        zip_hash.to_string(),
+    );
+    let path = uploader::checkpoint_dir(profile_dir).join(format!("{}.json", &cp.upload_id));
+    uploader::save_checkpoint(&path, &cp)?;
+    Ok((path, cp))
+}
+
 async fn upload_archive(
     client: &Client,
     config: &Config,
@@ -347,37 +380,37 @@ async fn upload_archive(
 ) -> Result<()> {
     let file_size = std::fs::metadata(zip_path)?.len();
 
+    // Compute hash of the zip for integrity verification
+    let zip_hash = uploader::hash_file(zip_path)?;
+
     // Check for existing checkpoint
     let checkpoint_info = uploader::find_existing_checkpoint(profile_dir, s3_key)?;
 
     let (cp_path, mut checkpoint) = if let Some((path, cp)) = checkpoint_info {
-        eprintln!("  Resuming upload ({} of {} parts already done)", cp.completed_parts.len(), cp.total_parts);
-        (path, cp)
+        // Verify the zip hasn't changed since the checkpoint was created
+        if cp.zip_hash.is_empty() || cp.zip_hash != zip_hash {
+            let reason = if cp.zip_hash.is_empty() {
+                "legacy checkpoint without hash"
+            } else {
+                "zip content changed since last attempt"
+            };
+            eprintln!("  Aborting stale upload ({})...", reason);
+            let _ = client
+                .abort_multipart_upload()
+                .bucket(&config.storage.bucket)
+                .key(s3_key)
+                .upload_id(&cp.upload_id)
+                .send()
+                .await;
+            uploader::delete_checkpoint(&path)?;
+            // Fall through to create new upload
+            start_new_upload(client, config, profile_dir, s3_key, zip_path, file_size, &zip_hash).await?
+        } else {
+            eprintln!("  Resuming upload ({} of {} parts already done)", cp.completed_parts.len(), cp.total_parts);
+            (path, cp)
+        }
     } else {
-        // Initiate new multipart upload
-        let resp = client
-            .create_multipart_upload()
-            .bucket(&config.storage.bucket)
-            .key(s3_key)
-            .storage_class(parse_storage_class(&config.storage.storage_class))
-            .send()
-            .await
-            .with_context(|| "Failed to initiate multipart upload")?;
-
-        let upload_id = resp
-            .upload_id()
-            .ok_or_else(|| anyhow::anyhow!("No upload ID returned"))?
-            .to_string();
-
-        let cp = UploadCheckpoint::new(
-            upload_id,
-            s3_key.to_string(),
-            zip_path.to_path_buf(),
-            file_size,
-        );
-        let path = uploader::checkpoint_dir(profile_dir).join(format!("{}.json", &cp.upload_id));
-        uploader::save_checkpoint(&path, &cp)?;
-        (path, cp)
+        start_new_upload(client, config, profile_dir, s3_key, zip_path, file_size, &zip_hash).await?
     };
 
     // Upload parts with progress bar

@@ -2,9 +2,12 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use xxhash_rust::xxh3::Xxh3;
 
 const PART_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
+const HASH_BUF_SIZE: usize = 1024 * 1024; // 1 MB read chunks for hashing
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UploadCheckpoint {
@@ -13,6 +16,8 @@ pub struct UploadCheckpoint {
     pub total_parts: u32,
     pub completed_parts: Vec<CompletedPart>,
     pub local_zip_path: PathBuf,
+    #[serde(default)]
+    pub zip_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,7 +27,7 @@ pub struct CompletedPart {
 }
 
 impl UploadCheckpoint {
-    pub fn new(upload_id: String, s3_key: String, local_zip_path: PathBuf, file_size: u64) -> Self {
+    pub fn new(upload_id: String, s3_key: String, local_zip_path: PathBuf, file_size: u64, zip_hash: String) -> Self {
         let total_parts = file_size.div_ceil(PART_SIZE) as u32;
         Self {
             upload_id,
@@ -30,6 +35,7 @@ impl UploadCheckpoint {
             total_parts,
             completed_parts: Vec::new(),
             local_zip_path,
+            zip_hash,
         }
     }
 
@@ -115,6 +121,22 @@ pub fn delete_checkpoint(path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn hash_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
+    let mut hasher = Xxh3::new();
+    let mut buf = vec![0u8; HASH_BUF_SIZE];
+    loop {
+        let n = file.read(&mut buf)
+            .with_context(|| format!("Failed to read file for hashing: {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:016x}", hasher.digest()))
+}
+
 pub fn compute_total_parts(file_size: u64) -> u32 {
     file_size.div_ceil(PART_SIZE) as u32
 }
@@ -131,6 +153,7 @@ mod tests {
             "archives/backup.zip".to_string(),
             PathBuf::from("/tmp/backup.zip"),
             250 * 1024 * 1024, // 250 MB = 3 parts
+            "testhash".to_string(),
         );
         assert_eq!(cp.total_parts, 3);
         assert!(cp.completed_parts.is_empty());
@@ -145,6 +168,7 @@ mod tests {
             "archives/small.zip".to_string(),
             PathBuf::from("/tmp/small.zip"),
             50 * 1024 * 1024, // 50 MB = 1 part
+            "testhash".to_string(),
         );
         assert_eq!(cp.total_parts, 1);
     }
@@ -156,6 +180,7 @@ mod tests {
             "archives/exact.zip".to_string(),
             PathBuf::from("/tmp/exact.zip"),
             200 * 1024 * 1024, // 200 MB = exactly 2 parts
+            "testhash".to_string(),
         );
         assert_eq!(cp.total_parts, 2);
     }
@@ -167,6 +192,7 @@ mod tests {
             "key".to_string(),
             PathBuf::from("/tmp/f.zip"),
             300 * 1024 * 1024,
+            "testhash".to_string(),
         );
         assert_eq!(cp.total_parts, 3);
 
@@ -189,6 +215,7 @@ mod tests {
             "key".to_string(),
             PathBuf::from("/tmp/f.zip"),
             150 * 1024 * 1024,
+            "testhash".to_string(),
         );
 
         cp.record_part(1, "etag-1".to_string());
@@ -205,6 +232,7 @@ mod tests {
             "key".to_string(),
             PathBuf::from("/tmp/f.zip"),
             file_size,
+            "testhash".to_string(),
         );
 
         let (start, end) = cp.part_byte_range(1, file_size);
@@ -230,6 +258,7 @@ mod tests {
             "archives/test.zip".to_string(),
             PathBuf::from("/tmp/test.zip"),
             200 * 1024 * 1024,
+            "testhash".to_string(),
         );
         cp.record_part(1, "\"etag-with-quotes\"".to_string());
 
@@ -248,6 +277,7 @@ mod tests {
             "key".to_string(),
             PathBuf::from("/tmp/f.zip"),
             100 * 1024 * 1024,
+            "testhash".to_string(),
         );
 
         save_checkpoint(&path, &cp).unwrap();
@@ -290,6 +320,7 @@ mod tests {
             "archives/backup-2026.zip".to_string(),
             PathBuf::from("/tmp/backup.zip"),
             100 * 1024 * 1024,
+            "testhash".to_string(),
         );
         let cp_path = cp_dir.join("upload-xyz.json");
         save_checkpoint(&cp_path, &cp).unwrap();
