@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
             println!("Scan complete:");
             println!("  Files scanned: {}", stats.total_files_scanned);
             println!("  Skipped (cutoff): {}", stats.skipped_by_cutoff);
+            println!("  Skipped (excluded): {}", stats.skipped_by_exclude);
             println!("  Unchanged: {}", stats.unchanged);
             println!("  New: {}", stats.new);
             println!("  Modified: {}", stats.modified);

@@ -50,6 +50,7 @@ pub struct ScanResult {
 pub struct ScanStats {
     pub total_files_scanned: u64,
     pub skipped_by_cutoff: u64,
+    pub skipped_by_exclude: u64,
     pub unchanged: u64,
     pub new: u64,
     pub modified: u64,
@@ -75,10 +76,64 @@ pub fn compute_fingerprint(path: &Path) -> Result<String> {
     Ok(format!("{:016x}-{}", hash, size))
 }
 
+fn should_exclude(path: &Path, source_root: &Path, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let relative = path.strip_prefix(source_root).unwrap_or(path);
+    for component in relative.components() {
+        let name = component.as_os_str().to_string_lossy();
+        for pattern in patterns {
+            if pattern.contains('*') {
+                if glob_match_simple(&name, pattern) {
+                    return true;
+                }
+            } else if name == *pattern {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn glob_match_simple(text: &str, pattern: &str) -> bool {
+    let t = text.as_bytes();
+    let p = pattern.as_bytes();
+    let mut ti = 0;
+    let mut pi = 0;
+    let mut star_ti: Option<usize> = None;
+    let mut star_pi: Option<usize> = None;
+
+    while ti < t.len() {
+        if pi < p.len() && p[pi] == b'*' {
+            star_ti = Some(ti);
+            star_pi = Some(pi + 1);
+            pi += 1;
+        } else if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+            ti += 1;
+            pi += 1;
+        } else if let (Some(sti), Some(spi)) = (star_ti, star_pi) {
+            let new_sti = sti + 1;
+            star_ti = Some(new_sti);
+            ti = new_sti;
+            pi = spi;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+
+    pi == p.len()
+}
+
 pub fn scan(
     sources: &[SourceConfig],
     manifest: &Manifest,
     cutoff: Option<DateTime<Utc>>,
+    exclude: &[String],
 ) -> Result<ScanResult> {
     let mut stats = ScanStats::default();
     let mut changes = Vec::new();
@@ -99,9 +154,20 @@ pub fn scan(
         }
 
         for entry in WalkDir::new(&source.path).follow_links(true) {
-            let entry = entry.with_context(|| {
-                format!("Error walking directory: {}", source.path.display())
-            })?;
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    eprintln!("  Warning: skipping inaccessible path: {}", err);
+                    continue;
+                }
+            };
+
+            if should_exclude(entry.path(), &source.path, exclude) {
+                if entry.file_type().is_file() {
+                    stats.skipped_by_exclude += 1;
+                }
+                continue;
+            }
 
             if !entry.file_type().is_file() {
                 continue;
@@ -292,7 +358,7 @@ mod tests {
         let sources = vec![make_source(&dir, "photos")];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.total_files_scanned, 0);
         assert!(result.changes.is_empty());
     }
@@ -306,7 +372,7 @@ mod tests {
         let sources = vec![make_source(&dir, "marco")];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.new, 2);
         assert_eq!(result.stats.total_files_scanned, 2);
 
@@ -344,7 +410,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.unchanged, 1);
         assert_eq!(result.stats.new, 0);
         assert!(result.changes.is_empty());
@@ -370,7 +436,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.modified, 1);
         assert!(matches!(&result.changes[0], FileChange::Modified { logical_path, .. } if logical_path == "marco/photo.jpg"));
     }
@@ -399,7 +465,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.moved, 1);
         assert!(matches!(
             &result.changes[0],
@@ -428,7 +494,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.deleted, 1);
         assert!(matches!(
             &result.changes[0],
@@ -459,7 +525,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.moved, 1);
         assert_eq!(result.stats.deleted, 0);
         // The old path shouldn't show as deleted since it was identified as the source of a move
@@ -481,7 +547,7 @@ mod tests {
 
         // Cutoff: only files before 2025-01-01
         let cutoff = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
-        let result = scan(&sources, &manifest, Some(cutoff)).unwrap();
+        let result = scan(&sources, &manifest, Some(cutoff), &[]).unwrap();
 
         assert_eq!(result.stats.total_files_scanned, 2);
         assert_eq!(result.stats.skipped_by_cutoff, 1);
@@ -513,7 +579,7 @@ mod tests {
         ];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.new, 2);
 
         let paths: Vec<&str> = result
@@ -536,7 +602,7 @@ mod tests {
         }];
         let manifest = empty_manifest();
 
-        let result = scan(&sources, &manifest, None);
+        let result = scan(&sources, &manifest, None, &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
@@ -576,7 +642,7 @@ mod tests {
             }],
         };
 
-        let result = scan(&sources, &manifest, None).unwrap();
+        let result = scan(&sources, &manifest, None, &[]).unwrap();
         assert_eq!(result.stats.moved, 1);
         assert_eq!(result.stats.deleted, 0);
         assert!(matches!(
@@ -584,5 +650,85 @@ mod tests {
             FileChange::Moved { logical_path, old_path, .. }
             if logical_path == "common/photo.jpg" && old_path == "marco/photo.jpg"
         ));
+    }
+
+    #[test]
+    fn test_scan_excludes_directory() {
+        let dir = TempDir::new().unwrap();
+        create_file(dir.path(), "photo.jpg", b"good photo");
+        create_file(dir.path(), "@eaDir/thumb.jpg", b"thumbnail");
+        create_file(dir.path(), "sub/@eaDir/meta.json", b"metadata");
+
+        let sources = vec![make_source(&dir, "marco")];
+        let manifest = empty_manifest();
+        let exclude = vec!["@eaDir".to_string()];
+
+        let result = scan(&sources, &manifest, None, &exclude).unwrap();
+        assert_eq!(result.stats.new, 1);
+        assert_eq!(result.stats.skipped_by_exclude, 2);
+
+        let paths: Vec<&str> = result
+            .changes
+            .iter()
+            .filter_map(|c| match c {
+                FileChange::New { logical_path, .. } => Some(logical_path.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths, vec!["marco/photo.jpg"]);
+    }
+
+    #[test]
+    fn test_scan_excludes_glob_pattern() {
+        let dir = TempDir::new().unwrap();
+        create_file(dir.path(), "photo.jpg", b"photo");
+        create_file(dir.path(), "temp.tmp", b"temp");
+        create_file(dir.path(), "other.tmp", b"other temp");
+
+        let sources = vec![make_source(&dir, "marco")];
+        let manifest = empty_manifest();
+        let exclude = vec!["*.tmp".to_string()];
+
+        let result = scan(&sources, &manifest, None, &exclude).unwrap();
+        assert_eq!(result.stats.new, 1);
+        assert_eq!(result.stats.skipped_by_exclude, 2);
+    }
+
+    #[test]
+    fn test_scan_excludes_multiple_patterns() {
+        let dir = TempDir::new().unwrap();
+        create_file(dir.path(), "photo.jpg", b"photo");
+        create_file(dir.path(), "@eaDir/thumb.jpg", b"thumb");
+        create_file(dir.path(), "#recycle/old.jpg", b"recycled");
+        create_file(dir.path(), ".DS_Store", b"ds");
+
+        let sources = vec![make_source(&dir, "marco")];
+        let manifest = empty_manifest();
+        let exclude = vec![
+            "@eaDir".to_string(),
+            "#recycle".to_string(),
+            ".DS_Store".to_string(),
+        ];
+
+        let result = scan(&sources, &manifest, None, &exclude).unwrap();
+        assert_eq!(result.stats.new, 1);
+        assert_eq!(result.stats.skipped_by_exclude, 3);
+    }
+
+    #[test]
+    fn test_should_exclude_exact_match() {
+        let root = Path::new("/mnt/nas");
+        let patterns = vec!["@eaDir".to_string()];
+        assert!(should_exclude(Path::new("/mnt/nas/@eaDir/file.jpg"), root, &patterns));
+        assert!(should_exclude(Path::new("/mnt/nas/sub/@eaDir/file.jpg"), root, &patterns));
+        assert!(!should_exclude(Path::new("/mnt/nas/photo.jpg"), root, &patterns));
+    }
+
+    #[test]
+    fn test_should_exclude_glob() {
+        let root = Path::new("/mnt/nas");
+        let patterns = vec!["*.tmp".to_string()];
+        assert!(should_exclude(Path::new("/mnt/nas/file.tmp"), root, &patterns));
+        assert!(!should_exclude(Path::new("/mnt/nas/file.jpg"), root, &patterns));
     }
 }

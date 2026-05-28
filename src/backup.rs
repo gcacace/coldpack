@@ -42,7 +42,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     let manifest = load_or_create_manifest(config, profile_dir).await?;
 
     // 3. Scan
-    let scan_result = scanner::scan(&config.backup.sources, &manifest, cutoff)?;
+    let scan_result = scanner::scan(&config.backup.sources, &manifest, cutoff, &config.backup.filter.exclude)?;
 
     if options.dry_run {
         return Ok(BackupReport {

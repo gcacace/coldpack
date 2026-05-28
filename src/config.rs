@@ -39,6 +39,8 @@ pub struct SourceConfig {
 pub struct FilterConfig {
     #[serde(default = "default_cutoff")]
     pub cutoff: String,
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -51,6 +53,7 @@ impl Default for FilterConfig {
     fn default() -> Self {
         Self {
             cutoff: default_cutoff(),
+            exclude: vec![],
         }
     }
 }

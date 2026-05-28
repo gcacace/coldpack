@@ -100,6 +100,18 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         }
     };
 
+    println!("\nExclude patterns (directories/files to skip during scan):");
+    println!("  Common exclusions: @eaDir, #recycle, .DS_Store, Thumbs.db");
+    let exclude_input = prompt_with_default(
+        "Patterns (comma-separated)",
+        "@eaDir, #recycle",
+    )?;
+    let exclude: Vec<String> = exclude_input
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     // === Performance ===
     println!("\n=== Performance ===");
     let workers_str = prompt_with_default("Max I/O workers for fingerprinting", "2")?;
@@ -119,7 +131,7 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         },
         backup: BackupConfig {
             sources,
-            filter: FilterConfig { cutoff },
+            filter: FilterConfig { cutoff, exclude },
         },
         performance: PerformanceConfig { max_io_workers },
     };
@@ -213,6 +225,7 @@ mod tests {
                 ],
                 filter: FilterConfig {
                     cutoff: "start_of_current_month".to_string(),
+                    exclude: vec!["@eaDir".to_string()],
                 },
             },
             performance: PerformanceConfig { max_io_workers: 2 },
