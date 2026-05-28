@@ -21,33 +21,54 @@ For ~500 GB of photos/videos:
 
 ### 1. Prerequisites
 
-- Rust toolchain (for building from source)
-- AWS account with an S3 bucket
-- IAM user/role with appropriate permissions
+- A development machine with the [Rust toolchain](https://rustup.rs/) installed (for building)
+- An AWS account with an S3 bucket created
+- A Synology NAS running DSM 7+ (x86_64 Intel/AMD)
 
-### 2. Build
+### 2. Build the Binary
+
+Build on any x86_64 Linux machine (or your dev machine if it's Linux x86_64):
 
 ```bash
-# On your development machine:
 cargo build --release
-
-# The binary will be at target/release/coldpack
-# Copy it to your Synology NAS:
-scp target/release/coldpack your-nas:/usr/local/bin/
 ```
 
-For Synology NAS cross-compilation (if your NAS uses a different architecture):
+The binary is a single self-contained file at `target/release/coldpack` (~23 MB). No other files or libraries are needed.
+
+> **Note:** If the build gets OOM-killed on a memory-constrained machine, limit parallelism:
+> ```bash
+> CARGO_BUILD_JOBS=2 cargo build --release
+> ```
+
+### 3. Deploy to Synology NAS
+
+Copy the binary to your NAS:
+
 ```bash
-# For x86_64 Synology (most modern models):
-cargo build --release --target x86_64-unknown-linux-gnu
-
-# For ARM-based Synology (older/smaller models):
-cargo build --release --target aarch64-unknown-linux-gnu
+scp target/release/coldpack your-nas-ip:/usr/local/bin/
+ssh your-nas-ip chmod +x /usr/local/bin/coldpack
 ```
 
-### 3. AWS Setup
+That's it — just the one file. It runs natively on DSM 7+ x86_64 systems (DS920+, DS1621+, DS723+, etc.) since they ship a compatible glibc.
 
-Create a dedicated IAM user with minimal permissions:
+### 4. Configure AWS Credentials on the NAS
+
+SSH into your NAS and create a credentials file:
+
+```bash
+ssh your-nas-ip
+mkdir -p ~/.aws
+cat > ~/.aws/credentials << 'EOF'
+[default]
+aws_access_key_id = YOUR_ACCESS_KEY
+aws_secret_access_key = YOUR_SECRET_KEY
+EOF
+chmod 600 ~/.aws/credentials
+```
+
+The AWS SDK reads this file automatically — no environment variables needed.
+
+**IAM Policy:** Create a dedicated IAM user with minimal permissions:
 
 ```json
 {
@@ -75,27 +96,18 @@ Create a dedicated IAM user with minimal permissions:
 }
 ```
 
-Configure credentials on the NAS:
-```bash
-mkdir -p ~/.aws
-cat > ~/.aws/credentials << 'EOF'
-[default]
-aws_access_key_id = YOUR_ACCESS_KEY
-aws_secret_access_key = YOUR_SECRET_KEY
-EOF
-chmod 600 ~/.aws/credentials
-```
+### 5. Run the Setup Wizard
 
-### 4. Setup (Interactive)
+On the NAS, run the interactive setup:
 
-Run the setup wizard to create a profile:
 ```bash
 coldpack setup
 ```
 
-The wizard will guide you through:
+The wizard walks you through every setting step by step:
 - S3 bucket name and AWS region
-- Source directories (with labels like "marco", "laura", "common")
+- Storage class (choose STANDARD for testing, DEEP_ARCHIVE for production)
+- Source directories with labels (e.g., "marco", "laura", "common")
 - Cutoff strategy (defaults to ignoring current month's files)
 - Performance settings
 
@@ -106,14 +118,14 @@ To create additional profiles (e.g., for a different backup set):
 coldpack setup --profile work-laptop
 ```
 
-### 5. First Run (Dry Run)
+### 6. Verify with a Dry Run
 
-Verify everything is detected correctly without uploading:
 ```bash
 coldpack backup --dry-run
 ```
 
-This will show you what would be backed up:
+This scans your source directories and shows what would be backed up without uploading anything:
+
 ```
 Scan complete:
   Files scanned: 12345
@@ -124,21 +136,21 @@ Scan complete:
   Moved: 0
   Deleted: 0
 
-(dry run - no changes made)
+(dry run — no changes made)
 ```
 
-### 6. First Backup
+### 7. Run Your First Backup
 
 ```bash
 coldpack backup
 ```
 
-### 7. Schedule Monthly Backups (Synology Task Scheduler)
+### 8. Schedule Monthly Backups (Synology Task Scheduler)
 
 In **DSM > Control Panel > Task Scheduler**, create a new **User-defined script**:
 
 - **Task**: coldpack monthly backup
-- **User**: root (or a user with read access to photo folders)
+- **User**: same user that owns `~/.aws/credentials` (usually `root`)
 - **Schedule**: 2nd of every month, 3:00 AM
 - **Command**:
 
@@ -146,7 +158,11 @@ In **DSM > Control Panel > Task Scheduler**, create a new **User-defined script*
 nice -n 19 ionice -c 3 /usr/local/bin/coldpack backup >> /var/log/coldpack.log 2>&1
 ```
 
-The `nice`/`ionice` flags ensure coldpack runs at lowest priority, so it doesn't interfere with Home Assistant or other NAS services.
+The `nice -n 19 ionice -c 3` flags run coldpack at the lowest CPU and I/O priority, so it won't interfere with Home Assistant or other NAS services running overnight.
+
+**Important:** If the Task Scheduler runs as `root` but your AWS credentials are under a different user's home directory, either:
+- Place credentials at `/root/.aws/credentials`, or
+- Add `export HOME=/var/services/homes/your-user` at the top of the script
 
 ## Profiles
 
