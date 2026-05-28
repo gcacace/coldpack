@@ -121,6 +121,7 @@ pub fn plan_archives(changes: &[FileChange], max_zip_bytes: u64) -> ArchivePlan 
 pub fn create_archive_from_group(
     output_path: &Path,
     group: &ArchiveGroup,
+    compression: zip::CompressionMethod,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<ArchiveResult> {
     if let Some(parent) = output_path.parent() {
@@ -134,7 +135,7 @@ pub fn create_archive_from_group(
 
     let total = group.files.len() as u32;
     let options = FileOptions::<()>::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+        .compression_method(compression);
 
     for (i, (logical_path, disk_path, _size)) in group.files.iter().enumerate() {
         on_progress(i as u32 + 1, total);
@@ -165,6 +166,7 @@ pub fn create_archive_from_group(
 pub fn create_archive(
     output_path: &Path,
     changes: &[FileChange],
+    compression: zip::CompressionMethod,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<Option<ArchiveResult>> {
     let files_to_archive: Vec<(&str, &Path)> = changes
@@ -199,7 +201,7 @@ pub fn create_archive(
 
     let total = files_to_archive.len() as u32;
     let options = FileOptions::<()>::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+        .compression_method(compression);
 
     for (i, (logical_path, disk_path)) in files_to_archive.iter().enumerate() {
         on_progress(i as u32 + 1, total);
@@ -257,7 +259,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let output = dir.path().join("test.zip");
 
-        let result = create_archive(&output, &[], |_, _| {}).unwrap();
+        let result = create_archive(&output, &[], zip::CompressionMethod::Stored, |_, _| {}).unwrap();
         assert!(result.is_none());
         assert!(!output.exists());
     }
@@ -278,7 +280,7 @@ mod tests {
             },
         ];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap();
+        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap();
         assert!(result.is_none());
     }
 
@@ -290,7 +292,7 @@ mod tests {
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", content)];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
         assert_eq!(result.file_count, 1);
         assert!(result.size_bytes > 0);
         assert!(output.exists());
@@ -317,7 +319,7 @@ mod tests {
             make_new_change(dir.path(), "2026/04/photo3.jpg", b"photo 3"),
         ];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
         assert_eq!(result.file_count, 3);
 
         let file = File::open(&output).unwrap();
@@ -361,7 +363,7 @@ mod tests {
             },
         ];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
         // Only New + Modified go into the zip (2 files)
         assert_eq!(result.file_count, 2);
 
@@ -382,7 +384,7 @@ mod tests {
         ];
 
         let mut progress_calls = Vec::new();
-        create_archive(&output, &changes, |current, total| {
+        create_archive(&output, &changes, zip::CompressionMethod::Stored, |current, total| {
             progress_calls.push((current, total));
         })
         .unwrap();
@@ -397,7 +399,7 @@ mod tests {
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", b"data")];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, zip::CompressionMethod::Stored, |_, _| {}).unwrap().unwrap();
         assert!(result.path.exists());
     }
 

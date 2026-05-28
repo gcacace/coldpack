@@ -128,7 +128,8 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 group.label
             ));
 
-            let result = archiver::create_archive_from_group(&zip_path, group, |current, _total| {
+            let compression = parse_compression(&config.backup.compression);
+            let result = archiver::create_archive_from_group(&zip_path, group, compression, |current, _total| {
                 archive_bar.set_position(files_done + current as u64);
             })?;
 
@@ -181,6 +182,13 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
         archive_file_count: total_archive_file_count,
         manifest_updated: true,
     })
+}
+
+fn parse_compression(s: &str) -> zip::CompressionMethod {
+    match s {
+        "deflate" => zip::CompressionMethod::Deflated,
+        _ => zip::CompressionMethod::Stored,
+    }
 }
 
 fn parse_storage_class(s: &str) -> StorageClass {
