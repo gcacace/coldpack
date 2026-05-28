@@ -157,6 +157,12 @@ pub fn scan(
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
+                    // Check if the error path is in an excluded directory
+                    if let Some(err_path) = err.path() {
+                        if should_exclude(err_path, &source.path, exclude) {
+                            continue;
+                        }
+                    }
                     eprintln!("  Warning: skipping inaccessible path: {}", err);
                     continue;
                 }
