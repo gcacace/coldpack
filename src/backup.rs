@@ -75,6 +75,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     ));
 
     if options.dry_run {
+        print_dry_run_plan(&scan_result, config);
         return Ok(BackupReport {
             scan_stats: scan_result.stats,
             archive_size: None,
@@ -166,6 +167,120 @@ fn parse_storage_class(s: &str) -> StorageClass {
         "GLACIER_IR" => StorageClass::GlacierIr,
         "GLACIER" => StorageClass::Glacier,
         _ => StorageClass::DeepArchive,
+    }
+}
+
+fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
+    let new_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
+        FileChange::New { logical_path, size, .. } => Some((logical_path.as_str(), *size)),
+        _ => None,
+    }).collect();
+
+    let modified_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
+        FileChange::Modified { logical_path, size, .. } => Some((logical_path.as_str(), *size)),
+        _ => None,
+    }).collect();
+
+    let moved_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
+        FileChange::Moved { logical_path, old_path, .. } => Some((old_path.as_str(), logical_path.as_str())),
+        _ => None,
+    }).collect();
+
+    let deleted_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
+        FileChange::Deleted { logical_path } => Some(logical_path.as_str()),
+        _ => None,
+    }).collect();
+
+    let estimated_bytes: u64 = new_files.iter().chain(modified_files.iter())
+        .map(|(_, size)| size)
+        .sum();
+
+    let now = Utc::now();
+    let s3_key = format!(
+        "{}backup-{}.zip",
+        config.storage.archive_prefix,
+        now.format("%Y-%m-%dT%H%M%S")
+    );
+    let parts = if estimated_bytes > 0 {
+        estimated_bytes.div_ceil(100 * 1024 * 1024)
+    } else {
+        0
+    };
+
+    println!("\nDry run — backup plan:");
+    println!("  Archive: {}", s3_key);
+    println!("  Storage class: {}", config.storage.storage_class);
+    println!(
+        "  Files to archive: {} ({} new, {} modified)",
+        new_files.len() + modified_files.len(),
+        new_files.len(),
+        modified_files.len()
+    );
+    println!("  Estimated size: ~{} (before compression)", format_bytes(estimated_bytes));
+    if parts > 0 {
+        println!("  Upload parts: ~{} (100 MB each)", parts);
+    }
+    if !moved_files.is_empty() {
+        println!("  Moves to record: {}", moved_files.len());
+    }
+    if !deleted_files.is_empty() {
+        println!("  Deletions to record: {}", deleted_files.len());
+    }
+
+    if !new_files.is_empty() {
+        println!("\nNew files:");
+        print_file_list(&new_files, 20);
+    }
+
+    if !modified_files.is_empty() {
+        println!("\nModified files:");
+        print_file_list(&modified_files, 20);
+    }
+
+    if !moved_files.is_empty() {
+        println!("\nMoved files:");
+        for (i, (from, to)) in moved_files.iter().enumerate() {
+            if i >= 20 {
+                println!("  ... and {} more", moved_files.len() - 20);
+                break;
+            }
+            println!("  {} -> {}", from, to);
+        }
+    }
+
+    if !deleted_files.is_empty() {
+        println!("\nDeleted files:");
+        for (i, path) in deleted_files.iter().enumerate() {
+            if i >= 20 {
+                println!("  ... and {} more", deleted_files.len() - 20);
+                break;
+            }
+            println!("  {}", path);
+        }
+    }
+
+    println!("\n(dry run — no changes made)");
+}
+
+fn print_file_list(files: &[(&str, u64)], max: usize) {
+    for (i, (path, size)) in files.iter().enumerate() {
+        if i >= max {
+            println!("  ... and {} more", files.len() - max);
+            break;
+        }
+        println!("  {} ({})", path, format_bytes(*size));
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / 1024.0 / 1024.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{} B", bytes)
     }
 }
 

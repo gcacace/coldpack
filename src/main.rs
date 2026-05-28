@@ -128,7 +128,7 @@ async fn main() -> Result<()> {
             println!("  Deleted: {}", stats.deleted);
 
             if dry_run {
-                println!("\n(dry run — no changes made)");
+                // Plan already printed by run_backup
             } else if let Some(size) = report.archive_size {
                 println!(
                     "\nArchive uploaded: {} files, {:.1} MB",
