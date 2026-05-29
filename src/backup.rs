@@ -219,6 +219,13 @@ fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
                 format_bytes(group.total_size),
                 group.files.len()
             );
+            for (i, (logical_path, _, size)) in group.files.iter().enumerate() {
+                if i >= 20 {
+                    println!("      ... and {} more", group.files.len() - 20);
+                    break;
+                }
+                println!("      {} ({})", logical_path, format_bytes(*size));
+            }
         }
     }
 
