@@ -127,16 +127,29 @@ coldpack backup --dry-run
 This scans your source directories and shows what would be backed up without uploading anything:
 
 ```
+⠙ Scanned 12,345 files (12298 new, 0 modified, 0 moved, 2847 excluded)
+
+Dry run — backup plan:
+  Storage class: STANDARD
+  Max archive size: 10240 MB
+  Archives to create: 78 (12298 files, ~180.5 GB)
+
+    2016-03: 2.1 GB (45 files)
+    2016-04: 3.8 GB (62 files)
+    ...
+    2026-04: 1.9 GB (52 files)
+
+(dry run — no changes made)
+
 Scan complete:
   Files scanned: 12345
   Skipped (cutoff): 47
+  Skipped (excluded): 2847
   Unchanged: 0
   New: 12298
   Modified: 0
   Moved: 0
   Deleted: 0
-
-(dry run — no changes made)
 ```
 
 ### 7. Run Your First Backup
@@ -203,6 +216,10 @@ path = "/volume1/homes/laura/Photos"
 name = "common"
 path = "/volume1/photos/family"
 
+[backup]
+max_archive_size_mb = 10240
+tmp_dir = "/volume1/tmp/coldpack"
+
 [backup.filter]
 cutoff = "start_of_current_month"
 exclude = ["@eaDir", "#recycle", ".DS_Store", "Thumbs.db"]
@@ -211,7 +228,20 @@ exclude = ["@eaDir", "#recycle", ".DS_Store", "Thumbs.db"]
 max_io_workers = 2
 ```
 
-**Storage class options:** `STANDARD` (testing), `STANDARD_IA`, `GLACIER_IR`, `GLACIER`, `DEEP_ARCHIVE` (production).
+**Configuration reference:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `storage.bucket` | (required) | S3 bucket name |
+| `storage.region` | (required) | AWS region |
+| `storage.archive_prefix` | `archives/` | S3 key prefix for archives |
+| `storage.manifest_prefix` | `manifest/` | S3 key prefix for manifest |
+| `storage.storage_class` | `DEEP_ARCHIVE` | S3 storage class (`STANDARD`, `STANDARD_IA`, `GLACIER_IR`, `GLACIER`, `DEEP_ARCHIVE`) |
+| `backup.max_archive_size_mb` | `10240` (10 GB) | Max size per archive before splitting |
+| `backup.tmp_dir` | system temp | Directory for building archives before upload |
+| `backup.filter.cutoff` | `start_of_current_month` | Only backup files older than this (`YYYY-MM-DD`, `start_of_current_month`, or `none`) |
+| `backup.filter.exclude` | `[]` | Path patterns to skip (`@eaDir`, `*.tmp`, etc.) |
+| `performance.max_io_workers` | `2` | Concurrent fingerprint reads |
 
 ## Commands
 
@@ -219,13 +249,14 @@ max_io_workers = 2
 
 Interactive wizard to create or overwrite a profile configuration.
 
-### `coldpack backup [--dry-run] [--cutoff <date|"none">]`
+### `coldpack backup [--dry-run] [--cutoff <date|"none">] [-v]`
 
-Scan all configured sources, detect changes, create a tar archive of new/modified files, upload to Glacier Deep Archive, and update the manifest.
+Scan all configured sources, detect changes, create tar archives grouped by month (one per data month), upload to S3, and update the manifest incrementally after each archive.
 
-- `--dry-run`: Show what would be backed up without uploading
+- `--dry-run`: Show the full backup plan (archives, sizes, file lists) without uploading
 - `--cutoff 2026-05-01`: Override the cutoff date (only backup files older than this)
 - `--cutoff none`: Backup everything regardless of file age
+- `-v` / `--verbose`: Show each skipped file with its reason (`[excluded]`, `[cutoff]`, `[unchanged]`)
 
 ### `coldpack browse [--path <glob>] [--after <date>] [--before <date>]`
 
@@ -300,9 +331,20 @@ When you move a photo between folders (e.g., from your personal folder to the fa
 
 By default, coldpack ignores files modified in the current month. This gives your NAS daily-sort job time to move photos to the right `year/month/` folder before they're backed up. Running on the 2nd of each month means you back up everything through the last day of the previous month.
 
+### Monthly Archive Grouping
+
+Files are grouped into archives by their modification month (`backup-2024-05-run20260602T030000.tar`). If a single month exceeds `max_archive_size_mb` (default 10 GB), it's split into parts. This means:
+- Selective restore can pull just the months you need
+- Archives sort chronologically in S3 listings
+- A single oversized file gets its own archive (can't split a file)
+
+### Archive Format
+
+Archives use **tar** (no compression). Photos and videos are already compressed formats — deflate adds CPU cost with zero benefit. Tar preserves full file metadata: modification time (nanosecond precision), unix permissions, and file ownership.
+
 ### Resumable Uploads
 
-If a backup is interrupted (power loss, network issue), the next run automatically resumes from where it left off. Upload progress is checkpointed locally after each 100 MB part.
+If a backup is interrupted (power loss, network issue), the next run automatically resumes from where it left off. Upload progress is checkpointed locally after each 100 MB part. The manifest is saved after each archive upload, so only the in-progress archive needs to be re-created on restart.
 
 ## File Layout
 
