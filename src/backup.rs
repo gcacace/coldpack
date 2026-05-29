@@ -2,20 +2,16 @@
 
 use anyhow::{Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, StorageClass};
 use aws_sdk_s3::Client;
-use aws_smithy_types::byte_stream::Length;
 use chrono::{DateTime, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::archiver;
 use crate::config::Config;
-use crate::manifest::{
-    self, Archive, FileEntry, HistoryEvent, Manifest,
-};
+use crate::manifest::{self, Archive, FileEntry, HistoryEvent, Manifest};
 use crate::scanner::{self, FileChange, ScanResult};
-use crate::uploader::{self, UploadCheckpoint};
+use crate::uploader;
 
 pub struct BackupOptions {
     pub dry_run: bool,
@@ -144,7 +140,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 group.label,
                 result.size_bytes as f64 / 1024.0 / 1024.0
             );
-            upload_archive(&s3_client, config, profile_dir, &s3_key, &archive_path).await?;
+            uploader::upload_archive(&s3_client, config, profile_dir, &s3_key, &archive_path).await?;
 
             // Clean up local zip
             let _ = std::fs::remove_file(&archive_path);
@@ -187,16 +183,6 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     })
 }
 
-
-fn parse_storage_class(s: &str) -> StorageClass {
-    match s {
-        "STANDARD" => StorageClass::Standard,
-        "STANDARD_IA" => StorageClass::StandardIa,
-        "GLACIER_IR" => StorageClass::GlacierIr,
-        "GLACIER" => StorageClass::Glacier,
-        _ => StorageClass::DeepArchive,
-    }
-}
 
 fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
     let max_zip_bytes = config.backup.max_archive_size_mb * 1024 * 1024;
@@ -400,174 +386,6 @@ fn apply_moves_and_deletes(
     }
 }
 
-async fn start_new_upload(
-    client: &Client,
-    config: &Config,
-    profile_dir: &Path,
-    s3_key: &str,
-    archive_path: &Path,
-    file_size: u64,
-    archive_hash: &str,
-) -> Result<(PathBuf, UploadCheckpoint)> {
-    let resp = client
-        .create_multipart_upload()
-        .bucket(&config.storage.bucket)
-        .key(s3_key)
-        .storage_class(parse_storage_class(&config.storage.storage_class))
-        .send()
-        .await
-        .with_context(|| "Failed to initiate multipart upload")?;
-
-    let upload_id = resp
-        .upload_id()
-        .ok_or_else(|| anyhow::anyhow!("No upload ID returned"))?
-        .to_string();
-
-    let cp = UploadCheckpoint::new(
-        upload_id,
-        s3_key.to_string(),
-        archive_path.to_path_buf(),
-        file_size,
-        archive_hash.to_string(),
-    );
-    let path = uploader::checkpoint_dir(profile_dir).join(format!("{}.json", &cp.upload_id));
-    uploader::save_checkpoint(&path, &cp)?;
-    Ok((path, cp))
-}
-
-async fn upload_archive(
-    client: &Client,
-    config: &Config,
-    profile_dir: &Path,
-    s3_key: &str,
-    archive_path: &Path,
-) -> Result<()> {
-    let file_size = std::fs::metadata(archive_path)?.len();
-
-    // Compute hash of the zip for integrity verification
-    let archive_hash = uploader::hash_file(archive_path)?;
-
-    // Check for existing checkpoint
-    let checkpoint_info = uploader::find_existing_checkpoint(profile_dir, s3_key)?;
-
-    let (cp_path, mut checkpoint) = if let Some((path, cp)) = checkpoint_info {
-        // Verify the zip hasn't changed since the checkpoint was created
-        if cp.archive_hash.is_empty() || cp.archive_hash != archive_hash {
-            let reason = if cp.archive_hash.is_empty() {
-                "legacy checkpoint without hash"
-            } else {
-                "zip content changed since last attempt"
-            };
-            eprintln!("  Aborting stale upload ({})...", reason);
-            let _ = client
-                .abort_multipart_upload()
-                .bucket(&config.storage.bucket)
-                .key(s3_key)
-                .upload_id(&cp.upload_id)
-                .send()
-                .await;
-            uploader::delete_checkpoint(&path)?;
-            // Fall through to create new upload
-            start_new_upload(client, config, profile_dir, s3_key, archive_path, file_size, &archive_hash).await?
-        } else {
-            eprintln!("  Resuming upload ({} of {} parts already done)", cp.completed_parts.len(), cp.total_parts);
-            (path, cp)
-        }
-    } else {
-        start_new_upload(client, config, profile_dir, s3_key, archive_path, file_size, &archive_hash).await?
-    };
-
-    // Upload parts with progress bar
-    let upload_bar = ProgressBar::new(file_size);
-    upload_bar.set_style(
-        ProgressStyle::with_template(
-            "  Uploading [{bar:40.cyan/dim}] {bytes}/{total_bytes}  ETA {eta}"
-        )
-        .unwrap()
-        .progress_chars("##-"),
-    );
-
-    // Account for already-completed parts
-    let already_uploaded: u64 = checkpoint
-        .completed_parts
-        .iter()
-        .map(|p| {
-            let (start, end) = checkpoint.part_byte_range(p.part_number, file_size);
-            end - start
-        })
-        .sum();
-    upload_bar.set_position(already_uploaded);
-
-    while let Some(part_number) = checkpoint.next_part_number() {
-        let (start, end) = checkpoint.part_byte_range(part_number, file_size);
-        let length = end - start;
-
-        let body = ByteStream::read_from()
-            .path(archive_path)
-            .offset(start)
-            .length(Length::Exact(length))
-            .build()
-            .await
-            .with_context(|| format!("Failed to read part {} from zip", part_number))?;
-
-        let resp = client
-            .upload_part()
-            .bucket(&config.storage.bucket)
-            .key(s3_key)
-            .upload_id(&checkpoint.upload_id)
-            .part_number(part_number as i32)
-            .content_length(length as i64)
-            .body(body)
-            .send()
-            .await
-            .with_context(|| format!("Failed to upload part {}", part_number))?;
-
-        let etag = resp
-            .e_tag()
-            .ok_or_else(|| anyhow::anyhow!("No ETag returned for part {}", part_number))?
-            .to_string();
-
-        checkpoint.record_part(part_number, etag);
-        uploader::save_checkpoint(&cp_path, &checkpoint)?;
-        upload_bar.set_position(already_uploaded + end);
-    }
-
-    upload_bar.finish_and_clear();
-
-    // Complete multipart upload
-    let completed_parts: Vec<CompletedPart> = {
-        let mut parts = checkpoint.completed_parts.clone();
-        parts.sort_by_key(|p| p.part_number);
-        parts
-            .iter()
-            .map(|p| {
-                CompletedPart::builder()
-                    .part_number(p.part_number as i32)
-                    .e_tag(&p.etag)
-                    .build()
-            })
-            .collect()
-    };
-
-    client
-        .complete_multipart_upload()
-        .bucket(&config.storage.bucket)
-        .key(s3_key)
-        .upload_id(&checkpoint.upload_id)
-        .multipart_upload(
-            CompletedMultipartUpload::builder()
-                .set_parts(Some(completed_parts))
-                .build(),
-        )
-        .send()
-        .await
-        .with_context(|| "Failed to complete multipart upload")?;
-
-    // Clean up checkpoint
-    uploader::delete_checkpoint(&cp_path)?;
-
-    Ok(())
-}
 
 async fn save_manifest(config: &Config, profile_dir: &Path, manifest: &Manifest) -> Result<()> {
     // Save locally
@@ -816,6 +634,7 @@ mod tests {
     use super::*;
     use crate::scanner::ScanStats;
     use chrono::TimeZone;
+    use std::path::PathBuf;
 
     fn make_scan_result(changes: Vec<FileChange>) -> ScanResult {
         ScanResult {

@@ -7,6 +7,7 @@ mod restore;
 mod scanner;
 mod setup;
 mod uploader;
+mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
