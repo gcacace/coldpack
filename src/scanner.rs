@@ -94,7 +94,33 @@ pub fn scan(
     let file_index: HashMap<&str, &FileEntry> = manifest.file_index();
     let fingerprint_index: HashMap<&str, &FileEntry> = manifest.fingerprint_index();
 
-    // Track which manifest paths we've seen on disk (for deletion detection)
+    // First pass: collect all logical paths that exist on disk
+    // This is needed so move detection can check if the "source" file still exists
+    let mut all_disk_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for source in sources {
+        if !source.path.exists() {
+            anyhow::bail!(
+                "Source path does not exist: {} (name: '{}')",
+                source.path.display(),
+                source.name
+            );
+        }
+        for entry in walkdir::WalkDir::new(&source.path).follow_links(true) {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if should_exclude(entry.path(), &source.path, exclude) || !entry.file_type().is_file() {
+                continue;
+            }
+            if let Ok(relative) = entry.path().strip_prefix(&source.path) {
+                let logical = format!("{}/{}", source.name, relative.to_string_lossy().replace('\\', "/"));
+                all_disk_paths.insert(logical);
+            }
+        }
+    }
+
+    // Second pass: actual change detection
     let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for source in sources {
@@ -201,13 +227,25 @@ pub fn scan(
             let fingerprint = compute_fingerprint(&disk_path)?;
 
             if let Some(existing) = fingerprint_index.get(fingerprint.as_str()) {
-                // Same content exists at a different path — this is a move
-                stats.moved += 1;
-                changes.push(FileChange::Moved {
-                    logical_path,
-                    old_path: existing.path.clone(),
-                    fingerprint,
-                });
+                if !all_disk_paths.contains(&existing.path) {
+                    // Old path no longer exists on disk — this is a move
+                    stats.moved += 1;
+                    changes.push(FileChange::Moved {
+                        logical_path,
+                        old_path: existing.path.clone(),
+                        fingerprint,
+                    });
+                } else {
+                    // Old path still exists — this is a duplicate/copy, treat as new
+                    stats.new += 1;
+                    changes.push(FileChange::New {
+                        logical_path,
+                        disk_path,
+                        size,
+                        mtime,
+                        fingerprint,
+                    });
+                }
             } else {
                 // Genuinely new file
                 stats.new += 1;
@@ -699,5 +737,85 @@ mod tests {
         let patterns = vec!["*.tmp".to_string()];
         assert!(should_exclude(Path::new("/mnt/nas/file.tmp"), root, &patterns));
         assert!(!should_exclude(Path::new("/mnt/nas/file.jpg"), root, &patterns));
+    }
+
+    #[test]
+    fn test_scan_duplicate_files_both_new() {
+        let dir = TempDir::new().unwrap();
+        let content = b"identical photo content";
+        create_file(dir.path(), "folder-a/photo.jpg", content);
+        create_file(dir.path(), "folder-b/photo.jpg", content);
+
+        let sources = vec![make_source(&dir, "marco")];
+        let manifest = empty_manifest();
+
+        let result = scan(&sources, &manifest, None, &[], false, |_| {}).unwrap();
+        // Both should be New since neither exists in manifest
+        assert_eq!(result.stats.new, 2);
+        assert_eq!(result.stats.moved, 0);
+    }
+
+    #[test]
+    fn test_scan_duplicate_in_manifest_original_still_exists() {
+        let dir = TempDir::new().unwrap();
+        let content = b"shared content between duplicates";
+        let original_path = create_file(dir.path(), "original.jpg", content);
+        create_file(dir.path(), "copy.jpg", content);
+
+        let fp = compute_fingerprint(&original_path).unwrap();
+        let metadata = fs::metadata(&original_path).unwrap();
+        let mtime: DateTime<Utc> = metadata.modified().unwrap().into();
+
+        let sources = vec![make_source(&dir, "marco")];
+        let manifest = Manifest {
+            version: 1,
+            last_backup: None,
+            archives: vec![],
+            files: vec![FileEntry {
+                path: "marco/original.jpg".to_string(),
+                size: metadata.len(),
+                mtime,
+                fingerprint: fp,
+                archive_id: "a1".to_string(),
+                history: vec![],
+            }],
+        };
+
+        let result = scan(&sources, &manifest, None, &[], false, |_| {}).unwrap();
+        // The key assertion: copy.jpg must NOT be a move (original still exists)
+        assert_eq!(result.stats.moved, 0);
+        let has_move = result.changes.iter().any(|c| matches!(c, FileChange::Moved { .. }));
+        assert!(!has_move, "Duplicate file should not be detected as a move");
+    }
+
+    #[test]
+    fn test_scan_duplicate_in_manifest_original_removed() {
+        let dir = TempDir::new().unwrap();
+        let content = b"content that will be moved";
+        // Only new-location.jpg exists on disk, original is gone
+        create_file(dir.path(), "new-location.jpg", content);
+
+        let fp = compute_fingerprint(&dir.path().join("new-location.jpg")).unwrap();
+
+        let sources = vec![make_source(&dir, "marco")];
+        let manifest = Manifest {
+            version: 1,
+            last_backup: None,
+            archives: vec![],
+            files: vec![FileEntry {
+                path: "marco/original.jpg".to_string(),
+                size: content.len() as u64,
+                mtime: Utc::now(),
+                fingerprint: fp,
+                archive_id: "a1".to_string(),
+                history: vec![],
+            }],
+        };
+
+        let result = scan(&sources, &manifest, None, &[], false, |_| {}).unwrap();
+        // original.jpg is gone, new-location.jpg has same fingerprint → move
+        assert_eq!(result.stats.moved, 1);
+        assert_eq!(result.stats.new, 0);
+        assert_eq!(result.stats.deleted, 0);
     }
 }
