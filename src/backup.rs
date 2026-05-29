@@ -91,8 +91,8 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     let mut manifest = manifest;
 
     if !archive_plan.groups.is_empty() {
-        let tmp_dir = std::env::temp_dir().join("coldpack");
-        std::fs::create_dir_all(&tmp_dir)?;
+        let tmp_dir = &config.backup.tmp_dir;
+        std::fs::create_dir_all(tmp_dir)?;
         let s3_client = crate::util::create_s3_client(config).await;
 
         let total_files = archive_plan.total_files() as u64;

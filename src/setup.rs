@@ -117,6 +117,12 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
     let max_archive_str = prompt_with_default("Max archive size in MB", "10240")?;
     let max_archive_size_mb: u64 = max_archive_str.parse().unwrap_or(10240);
 
+    println!("\nTemporary directory for archive creation:");
+    println!("  Archives are built here before uploading. Needs enough free space for one month of data.");
+    let default_tmp = std::env::temp_dir().join("coldpack");
+    let tmp_dir_str = prompt_with_default("Path", &default_tmp.to_string_lossy())?;
+    let tmp_dir = PathBuf::from(tmp_dir_str);
+
     // === Performance ===
     println!("\n=== Performance ===");
     let workers_str = prompt_with_default("Max I/O workers for fingerprinting", "2")?;
@@ -138,6 +144,7 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
             sources,
             filter: FilterConfig { cutoff, exclude },
             max_archive_size_mb,
+            tmp_dir,
         },
         performance: PerformanceConfig { max_io_workers },
     };
@@ -234,6 +241,7 @@ mod tests {
                     exclude: vec!["@eaDir".to_string()],
                 },
                 max_archive_size_mb: 10240,
+                tmp_dir: std::env::temp_dir().join("coldpack"),
             },
             performance: PerformanceConfig { max_io_workers: 2 },
         };

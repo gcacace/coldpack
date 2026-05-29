@@ -29,6 +29,8 @@ pub struct BackupConfig {
     pub filter: FilterConfig,
     #[serde(default = "default_max_archive_size_mb")]
     pub max_archive_size_mb: u64,
+    #[serde(default = "default_tmp_dir")]
+    pub tmp_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -90,6 +92,10 @@ fn default_cutoff() -> String {
 
 fn default_max_archive_size_mb() -> u64 {
     10240 // 10 GB
+}
+
+fn default_tmp_dir() -> PathBuf {
+    std::env::temp_dir().join("coldpack")
 }
 
 
@@ -478,6 +484,7 @@ max_io_workers = 0
                 }],
                 filter: FilterConfig::default(),
                 max_archive_size_mb: 10240,
+                tmp_dir: PathBuf::from("/tmp/coldpack"),
             },
             performance: PerformanceConfig::default(),
         };
