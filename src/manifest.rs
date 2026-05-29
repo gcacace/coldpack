@@ -121,7 +121,7 @@ pub fn save_to_file(manifest: &Manifest, path: &Path) -> Result<()> {
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
     let tmp_path = path.with_extension("json.tmp");
-    let content = serde_json::to_string_pretty(manifest)
+    let content = serde_json::to_string(manifest)
         .with_context(|| "Failed to serialize manifest")?;
     std::fs::write(&tmp_path, &content)
         .with_context(|| format!("Failed to write manifest to: {}", tmp_path.display()))?;
@@ -184,7 +184,7 @@ pub async fn save_to_s3(config: &Config, profile_dir: &Path, manifest: &Manifest
 
     let client = crate::util::create_s3_client(config).await;
     let key = format!("{}manifest.json", config.storage.manifest_prefix);
-    let content = serde_json::to_string_pretty(manifest)?;
+    let content = serde_json::to_string(manifest)?;
 
     client
         .put_object()
