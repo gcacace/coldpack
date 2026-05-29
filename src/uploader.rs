@@ -149,6 +149,33 @@ pub fn compute_total_parts(file_size: u64) -> u32 {
     file_size.div_ceil(PART_SIZE) as u32
 }
 
+pub fn run_cleanup(profile_dir: &Path) -> anyhow::Result<()> {
+    let cp_dir = checkpoint_dir(profile_dir);
+    if cp_dir.exists() {
+        let mut cleaned = 0;
+        for entry in std::fs::read_dir(&cp_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                println!("  Removing checkpoint: {}", path.display());
+                std::fs::remove_file(&path)?;
+                cleaned += 1;
+            }
+        }
+        if cleaned > 0 {
+            println!("Cleaned up {} checkpoint file(s).", cleaned);
+            println!(
+                "Note: In production, this would also abort stale multipart uploads on S3."
+            );
+        } else {
+            println!("No stale checkpoints found.");
+        }
+    } else {
+        println!("No stale checkpoints found.");
+    }
+    Ok(())
+}
+
 pub async fn upload_archive(
     client: &Client,
     config: &Config,

@@ -261,61 +261,10 @@ async fn main() -> Result<()> {
             println!("\nNote: In production, this would check S3 restore status, download available archives, and extract files.");
         }
         Commands::Status => {
-            let local_manifest_path = manifest::manifest_local_path(&profile_dir);
-
-            if local_manifest_path.exists() {
-                let m = manifest::load_from_file(&local_manifest_path)?;
-                println!("Backup Status (profile: '{}'):", cli.profile);
-                println!("  Last backup: {}", m.last_backup.map_or("never".to_string(), |t| t.to_rfc3339()));
-                println!("  Total archives: {}", m.archives.len());
-                println!("  Total files tracked: {}", m.files.len());
-
-                let total_size: u64 = m.archives.iter().map(|a| a.size_bytes).sum();
-                println!("  Total archive size: {}", browse::format_size(total_size));
-            } else {
-                println!("No backup data found. Run 'coldpack backup' to start.");
-            }
-
-            let jobs = restore::load_restore_jobs(&profile_dir)?;
-            if !jobs.is_empty() {
-                println!("\nPending Restores:");
-                for (_, job) in &jobs {
-                    let pending = job.archives.iter().filter(|a| matches!(a.status, restore::RestoreStatus::Requested)).count();
-                    let available = job.archives.iter().filter(|a| matches!(a.status, restore::RestoreStatus::Available)).count();
-                    println!("  {} — {} pending, {} available", job.id, pending, available);
-                }
-            }
-
-            let cp_dir = uploader::checkpoint_dir(&profile_dir);
-            if cp_dir.exists() {
-                let count = std::fs::read_dir(&cp_dir)?.filter(|e| e.is_ok()).count();
-                if count > 0 {
-                    println!("\nStale Uploads: {} checkpoint file(s) found. Run 'coldpack cleanup' to resolve.", count);
-                }
-            }
+            backup::run_status(&profile_dir, &cli.profile)?;
         }
         Commands::Cleanup => {
-            let cp_dir = uploader::checkpoint_dir(&profile_dir);
-            if cp_dir.exists() {
-                let mut cleaned = 0;
-                for entry in std::fs::read_dir(&cp_dir)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "json") {
-                        println!("  Removing checkpoint: {}", path.display());
-                        std::fs::remove_file(&path)?;
-                        cleaned += 1;
-                    }
-                }
-                if cleaned > 0 {
-                    println!("Cleaned up {} checkpoint file(s).", cleaned);
-                    println!("Note: In production, this would also abort stale multipart uploads on S3.");
-                } else {
-                    println!("No stale checkpoints found.");
-                }
-            } else {
-                println!("No stale checkpoints found.");
-            }
+            uploader::run_cleanup(&profile_dir)?;
         }
     }
 

@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::{Context, Result};
-use aws_sdk_s3::primitives::ByteStream;
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
@@ -9,7 +8,9 @@ use std::path::Path;
 use crate::archiver;
 use crate::config::Config;
 use crate::manifest::{self, Archive, FileEntry, HistoryEvent, Manifest};
-use crate::scanner::{self, FileChange, ScanResult};
+use crate::scanner::{self, FileChange};
+#[cfg(test)]
+use crate::scanner::ScanResult;
 use crate::uploader;
 
 pub struct BackupOptions {
@@ -34,7 +35,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     let cutoff = manifest::resolve_cutoff(cutoff_str)?;
 
     // 2. Load manifest (local cache or S3)
-    let manifest = load_or_create_manifest(config, profile_dir).await?;
+    let manifest = manifest::load_or_create(config, profile_dir).await?;
 
     // 3. Scan with progress spinner
     let scan_spinner = ProgressBar::new_spinner();
@@ -156,7 +157,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 add_file_to_manifest(&mut manifest, &scan_result.changes, logical_path, &archive_id);
             }
             manifest.last_backup = Some(now);
-            save_manifest(config, profile_dir, &manifest).await?;
+            manifest::save_to_s3(config, profile_dir, &manifest).await?;
         }
 
         archive_bar.finish_and_clear();
@@ -169,7 +170,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     if has_moves_or_deletes || archive_plan.groups.is_empty() {
         apply_moves_and_deletes(&mut manifest, &scan_result.changes, now);
         manifest.last_backup = Some(now);
-        save_manifest(config, profile_dir, &manifest).await?;
+        manifest::save_to_s3(config, profile_dir, &manifest).await?;
     }
 
     eprintln!("  Manifest saved ({} files tracked).", manifest.files.len());
@@ -250,56 +251,58 @@ fn format_bytes(bytes: u64) -> String {
     crate::util::format_bytes(bytes)
 }
 
-async fn load_or_create_manifest(config: &Config, profile_dir: &Path) -> Result<Manifest> {
-    let local_path = manifest::manifest_local_path(profile_dir);
+pub fn run_status(profile_dir: &std::path::Path, profile_name: &str) -> Result<()> {
+    let local_manifest_path = manifest::manifest_local_path(profile_dir);
 
-    // Try loading local manifest
-    if local_path.exists() {
-        match manifest::load_from_file(&local_path) {
-            Ok(m) => return Ok(m),
-            Err(_) => {
-                eprintln!("Local manifest corrupted, will download from S3...");
-            }
+    if local_manifest_path.exists() {
+        let m = manifest::load_from_file(&local_manifest_path)?;
+        println!("Backup Status (profile: '{}'):", profile_name);
+        println!(
+            "  Last backup: {}",
+            m.last_backup
+                .map_or("never".to_string(), |t| t.to_rfc3339())
+        );
+        println!("  Total archives: {}", m.archives.len());
+        println!("  Total files tracked: {}", m.files.len());
+
+        let total_size: u64 = m.archives.iter().map(|a| a.size_bytes).sum();
+        println!("  Total archive size: {}", format_bytes(total_size));
+    } else {
+        println!("No backup data found. Run 'coldpack backup' to start.");
+    }
+
+    let jobs = crate::restore::load_restore_jobs(profile_dir)?;
+    if !jobs.is_empty() {
+        println!("\nPending Restores:");
+        for (_, job) in &jobs {
+            let pending = job
+                .archives
+                .iter()
+                .filter(|a| matches!(a.status, crate::restore::RestoreStatus::Requested))
+                .count();
+            let available = job
+                .archives
+                .iter()
+                .filter(|a| matches!(a.status, crate::restore::RestoreStatus::Available))
+                .count();
+            println!("  {} — {} pending, {} available", job.id, pending, available);
         }
     }
 
-    // Try downloading from S3
-    match download_manifest_from_s3(config).await {
-        Ok(m) => {
-            // Cache locally
-            let _ = manifest::save_to_file(&m, &local_path);
-            Ok(m)
-        }
-        Err(_) => {
-            eprintln!("No existing manifest found, starting fresh.");
-            Ok(Manifest::new())
+    let cp_dir = uploader::checkpoint_dir(profile_dir);
+    if cp_dir.exists() {
+        let count = std::fs::read_dir(&cp_dir)?.filter(|e| e.is_ok()).count();
+        if count > 0 {
+            println!(
+                "\nStale Uploads: {} checkpoint file(s) found. Run 'coldpack cleanup' to resolve.",
+                count
+            );
         }
     }
+
+    Ok(())
 }
 
-async fn download_manifest_from_s3(config: &Config) -> Result<Manifest> {
-    let client = crate::util::create_s3_client(config).await;
-    let key = format!("{}manifest.json", config.storage.manifest_prefix);
-
-    let resp = client
-        .get_object()
-        .bucket(&config.storage.bucket)
-        .key(&key)
-        .send()
-        .await
-        .with_context(|| "Failed to download manifest from S3")?;
-
-    let bytes = resp
-        .body
-        .collect()
-        .await
-        .with_context(|| "Failed to read manifest body")?
-        .into_bytes();
-
-    let manifest: Manifest =
-        serde_json::from_slice(&bytes).with_context(|| "Failed to parse manifest from S3")?;
-    Ok(manifest)
-}
 
 fn add_file_to_manifest(
     manifest: &mut Manifest,
@@ -370,133 +373,7 @@ fn apply_moves_and_deletes(
 }
 
 
-async fn save_manifest(config: &Config, profile_dir: &Path, manifest: &Manifest) -> Result<()> {
-    // Save locally
-    let local_path = manifest::manifest_local_path(profile_dir);
-    manifest::save_to_file(manifest, &local_path)?;
-
-    // Upload to S3
-    let client = crate::util::create_s3_client(config).await;
-    let key = format!("{}manifest.json", config.storage.manifest_prefix);
-    let content = serde_json::to_string_pretty(manifest)?;
-
-    client
-        .put_object()
-        .bucket(&config.storage.bucket)
-        .key(&key)
-        .body(ByteStream::from(content.into_bytes()))
-        .content_type("application/json")
-        .send()
-        .await
-        .with_context(|| "Failed to upload manifest to S3")?;
-
-    Ok(())
-}
-
-#[allow(dead_code, unused_variables)]
-pub fn apply_changes_to_manifest_multi(
-    mut manifest: Manifest,
-    scan_result: &ScanResult,
-    archives_created: &[(String, String, u64, u32)], // (id, s3_key, size, count)
-    file_archive_map: &std::collections::HashMap<String, String>,
-    now: DateTime<Utc>,
-) -> Manifest {
-    // Add archive entries
-    for (id, s3_key, size, count) in archives_created {
-        manifest.archives.push(Archive {
-            id: id.clone(),
-            s3_key: s3_key.clone(),
-            size_bytes: *size,
-            created_at: now,
-            file_count: *count,
-        });
-    }
-
-    // Build a mutable index of existing files by path
-    let mut file_map: std::collections::HashMap<String, usize> = manifest
-        .files
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.path.clone(), i))
-        .collect();
-
-    for change in &scan_result.changes {
-        match change {
-            FileChange::New {
-                logical_path,
-                size,
-                mtime,
-                fingerprint,
-                ..
-            } => {
-                let archive_id = file_archive_map
-                    .get(logical_path)
-                    .cloned()
-                    .unwrap_or_default();
-                manifest.files.push(FileEntry {
-                    path: logical_path.clone(),
-                    size: *size,
-                    mtime: *mtime,
-                    fingerprint: fingerprint.clone(),
-                    archive_id,
-                    history: vec![],
-                });
-                file_map.insert(logical_path.clone(), manifest.files.len() - 1);
-            }
-            FileChange::Modified {
-                logical_path,
-                size,
-                mtime,
-                fingerprint,
-                ..
-            } => {
-                let archive_id = file_archive_map
-                    .get(logical_path)
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(&idx) = file_map.get(logical_path.as_str()) {
-                    let entry = &mut manifest.files[idx];
-                    entry.history.push(HistoryEvent::Added {
-                        archive_id: entry.archive_id.clone(),
-                        mtime: entry.mtime,
-                        size: entry.size,
-                    });
-                    entry.size = *size;
-                    entry.mtime = *mtime;
-                    entry.fingerprint = fingerprint.clone();
-                    entry.archive_id = archive_id;
-                }
-            }
-            FileChange::Moved {
-                logical_path,
-                old_path,
-                fingerprint,
-            } => {
-                if let Some(&idx) = file_map.get(old_path.as_str()) {
-                    let entry = &mut manifest.files[idx];
-                    entry.history.push(HistoryEvent::Moved {
-                        from: old_path.clone(),
-                        at: now,
-                    });
-                    entry.path = logical_path.clone();
-                    entry.fingerprint = fingerprint.clone();
-                    file_map.remove(old_path.as_str());
-                    file_map.insert(logical_path.clone(), idx);
-                }
-            }
-            FileChange::Deleted { logical_path } => {
-                if let Some(&idx) = file_map.get(logical_path.as_str()) {
-                    let entry = &mut manifest.files[idx];
-                    entry.history.push(HistoryEvent::Deleted { at: now });
-                }
-            }
-        }
-    }
-
-    manifest.last_backup = Some(now);
-    manifest
-}
-
+#[cfg(test)]
 pub fn apply_changes_to_manifest(
     mut manifest: Manifest,
     scan_result: &ScanResult,

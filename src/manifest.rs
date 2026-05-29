@@ -1,10 +1,13 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
+use aws_sdk_s3::primitives::ByteStream;
 use chrono::{Datelike, DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::config::Config;
 
 
 
@@ -124,6 +127,75 @@ pub fn save_to_file(manifest: &Manifest, path: &Path) -> Result<()> {
         .with_context(|| format!("Failed to write manifest to: {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path)
         .with_context(|| "Failed to atomically replace manifest file")?;
+    Ok(())
+}
+
+pub async fn load_or_create(config: &Config, profile_dir: &Path) -> Result<Manifest> {
+    let local_path = manifest_local_path(profile_dir);
+
+    if local_path.exists() {
+        match load_from_file(&local_path) {
+            Ok(m) => return Ok(m),
+            Err(_) => {
+                eprintln!("Local manifest corrupted, will download from S3...");
+            }
+        }
+    }
+
+    match download_from_s3(config).await {
+        Ok(m) => {
+            let _ = save_to_file(&m, &local_path);
+            Ok(m)
+        }
+        Err(_) => {
+            eprintln!("No existing manifest found, starting fresh.");
+            Ok(Manifest::new())
+        }
+    }
+}
+
+pub async fn download_from_s3(config: &Config) -> Result<Manifest> {
+    let client = crate::util::create_s3_client(config).await;
+    let key = format!("{}manifest.json", config.storage.manifest_prefix);
+
+    let resp = client
+        .get_object()
+        .bucket(&config.storage.bucket)
+        .key(&key)
+        .send()
+        .await
+        .with_context(|| "Failed to download manifest from S3")?;
+
+    let bytes = resp
+        .body
+        .collect()
+        .await
+        .with_context(|| "Failed to read manifest body")?
+        .into_bytes();
+
+    let manifest: Manifest =
+        serde_json::from_slice(&bytes).with_context(|| "Failed to parse manifest from S3")?;
+    Ok(manifest)
+}
+
+pub async fn save_to_s3(config: &Config, profile_dir: &Path, manifest: &Manifest) -> Result<()> {
+    let local_path = manifest_local_path(profile_dir);
+    save_to_file(manifest, &local_path)?;
+
+    let client = crate::util::create_s3_client(config).await;
+    let key = format!("{}manifest.json", config.storage.manifest_prefix);
+    let content = serde_json::to_string_pretty(manifest)?;
+
+    client
+        .put_object()
+        .bucket(&config.storage.bucket)
+        .key(&key)
+        .body(ByteStream::from(content.into_bytes()))
+        .content_type("application/json")
+        .send()
+        .await
+        .with_context(|| "Failed to upload manifest to S3")?;
+
     Ok(())
 }
 
