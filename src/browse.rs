@@ -69,110 +69,11 @@ fn matches_filter(file: &FileEntry, filter: &BrowseFilter) -> bool {
 }
 
 fn matches_glob(path: &str, pattern: &str) -> bool {
-    glob_recursive(path, pattern)
-}
-
-fn glob_recursive(path: &str, pattern: &str) -> bool {
-    // Split pattern on ** to handle double-star segments
-    if let Some(idx) = pattern.find("**") {
-        let prefix = &pattern[..idx];
-        let suffix = &pattern[idx + 2..];
-        // Remove leading / from suffix
-        let suffix = suffix.strip_prefix('/').unwrap_or(suffix);
-
-        // prefix must match the start of path (using single-star glob)
-        if !prefix.is_empty() {
-            // prefix should match a path prefix
-            // Try matching prefix against all possible path prefixes
-            let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
-            if !path.starts_with(prefix) && !glob_simple_prefix(path, prefix) {
-                return false;
-            }
-        }
-
-        if suffix.is_empty() {
-            return true;
-        }
-
-        // ** can match zero or more path segments
-        // Try matching suffix against every possible tail of path
-        for i in 0..=path.len() {
-            if (i == 0 || i == path.len() || path.as_bytes()[i - 1] == b'/' || prefix.is_empty())
-                && glob_simple(&path[i..], suffix)
-            {
-                return true;
-            }
-        }
-        false
-    } else {
-        glob_simple(path, pattern)
-    }
-}
-
-fn glob_simple_prefix(path: &str, pattern: &str) -> bool {
-    // Check if pattern matches the beginning of path up to a /
-    for i in 0..=path.len() {
-        if (i == path.len() || path.as_bytes()[i] == b'/') && glob_simple(&path[..i], pattern) {
-            return true;
-        }
-    }
-    false
-}
-
-fn glob_simple(text: &str, pattern: &str) -> bool {
-    // Simple glob: * matches anything except /, ? matches one char except /
-    let t = text.as_bytes();
-    let p = pattern.as_bytes();
-    let mut ti = 0;
-    let mut pi = 0;
-    let mut star_ti: Option<usize> = None;
-    let mut star_pi: Option<usize> = None;
-
-    while ti < t.len() {
-        if pi < p.len() && p[pi] == b'*' {
-            star_ti = Some(ti);
-            star_pi = Some(pi + 1);
-            pi += 1;
-        } else if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) && t[ti] != b'/' {
-            ti += 1;
-            pi += 1;
-        } else if pi < p.len() && p[pi] == t[ti] && t[ti] == b'/' {
-            ti += 1;
-            pi += 1;
-            // Reset star tracking at path separator for single *
-            star_ti = None;
-            star_pi = None;
-        } else if let (Some(sti), Some(spi)) = (star_ti, star_pi) {
-            if t[sti] == b'/' {
-                // Single * cannot cross /
-                return false;
-            }
-            let new_sti = sti + 1;
-            star_ti = Some(new_sti);
-            ti = new_sti;
-            pi = spi;
-        } else {
-            return false;
-        }
-    }
-
-    while pi < p.len() && p[pi] == b'*' {
-        pi += 1;
-    }
-
-    pi == p.len()
+    crate::glob::matches(path, pattern)
 }
 
 pub fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / 1024.0 / 1024.0)
-    } else {
-        format!("{:.2} GB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
-    }
+    crate::util::format_bytes(bytes)
 }
 
 #[cfg(test)]
@@ -351,6 +252,6 @@ mod tests {
         assert_eq!(format_size(500), "500 B");
         assert_eq!(format_size(1500), "1.5 KB");
         assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
-        assert_eq!(format_size(2 * 1024 * 1024 * 1024), "2.00 GB");
+        assert_eq!(format_size(2 * 1024 * 1024 * 1024), "2.0 GB");
     }
 }

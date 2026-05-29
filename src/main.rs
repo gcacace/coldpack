@@ -2,6 +2,7 @@ mod archiver;
 mod backup;
 mod browse;
 mod config;
+mod glob;
 mod manifest;
 mod restore;
 mod scanner;

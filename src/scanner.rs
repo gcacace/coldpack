@@ -77,56 +77,7 @@ pub fn compute_fingerprint(path: &Path) -> Result<String> {
 }
 
 fn should_exclude(path: &Path, source_root: &Path, patterns: &[String]) -> bool {
-    if patterns.is_empty() {
-        return false;
-    }
-    let relative = path.strip_prefix(source_root).unwrap_or(path);
-    for component in relative.components() {
-        let name = component.as_os_str().to_string_lossy();
-        for pattern in patterns {
-            if pattern.contains('*') {
-                if glob_match_simple(&name, pattern) {
-                    return true;
-                }
-            } else if name == *pattern {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn glob_match_simple(text: &str, pattern: &str) -> bool {
-    let t = text.as_bytes();
-    let p = pattern.as_bytes();
-    let mut ti = 0;
-    let mut pi = 0;
-    let mut star_ti: Option<usize> = None;
-    let mut star_pi: Option<usize> = None;
-
-    while ti < t.len() {
-        if pi < p.len() && p[pi] == b'*' {
-            star_ti = Some(ti);
-            star_pi = Some(pi + 1);
-            pi += 1;
-        } else if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
-            ti += 1;
-            pi += 1;
-        } else if let (Some(sti), Some(spi)) = (star_ti, star_pi) {
-            let new_sti = sti + 1;
-            star_ti = Some(new_sti);
-            ti = new_sti;
-            pi = spi;
-        } else {
-            return false;
-        }
-    }
-
-    while pi < p.len() && p[pi] == b'*' {
-        pi += 1;
-    }
-
-    pi == p.len()
+    crate::glob::path_matches_any(path, source_root, patterns)
 }
 
 pub fn scan(

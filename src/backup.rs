@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::Client;
 use chrono::{DateTime, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
@@ -93,7 +92,7 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     if !archive_plan.groups.is_empty() {
         let tmp_dir = std::env::temp_dir().join("coldpack");
         std::fs::create_dir_all(&tmp_dir)?;
-        let s3_client = create_s3_client(config).await?;
+        let s3_client = crate::util::create_s3_client(config).await;
 
         let total_files = archive_plan.total_files() as u64;
         let archive_bar = ProgressBar::new(total_files);
@@ -248,23 +247,7 @@ fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
 }
 
 fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.1} GB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / 1024.0 / 1024.0)
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-async fn create_s3_client(config: &Config) -> Result<Client> {
-    let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_config::Region::new(config.storage.region.clone()))
-        .load()
-        .await;
-    Ok(Client::new(&aws_config))
+    crate::util::format_bytes(bytes)
 }
 
 async fn load_or_create_manifest(config: &Config, profile_dir: &Path) -> Result<Manifest> {
@@ -295,7 +278,7 @@ async fn load_or_create_manifest(config: &Config, profile_dir: &Path) -> Result<
 }
 
 async fn download_manifest_from_s3(config: &Config) -> Result<Manifest> {
-    let client = create_s3_client(config).await?;
+    let client = crate::util::create_s3_client(config).await;
     let key = format!("{}manifest.json", config.storage.manifest_prefix);
 
     let resp = client
@@ -393,7 +376,7 @@ async fn save_manifest(config: &Config, profile_dir: &Path, manifest: &Manifest)
     manifest::save_to_file(manifest, &local_path)?;
 
     // Upload to S3
-    let client = create_s3_client(config).await?;
+    let client = crate::util::create_s3_client(config).await;
     let key = format!("{}manifest.json", config.storage.manifest_prefix);
     let content = serde_json::to_string_pretty(manifest)?;
 
