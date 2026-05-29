@@ -2,14 +2,19 @@
   <img src="logo.png" alt="coldpack" width="200">
 </p>
 
-Glacier Deep Archive backup CLI for personal NAS disaster recovery.
+**Extremely cheap disaster recovery for personal photos, videos, and files.**
 
-Backs up family photos and videos from multiple NAS folders to Amazon S3 Glacier Deep Archive with:
-- One tar archive per monthly backup run (minimal object count, minimal cost)
+Traditional backup tools upload every file as a separate S3 object. With 60,000 photos that means 60,000 objects — each incurring per-request fees, minimum storage charges, and retrieval costs. Coldpack solves this by bundling files into monthly tar archives, reducing tens of thousands of objects down to a handful. The result: pennies per month for hundreds of gigabytes of storage, with full file-level searchability via a local manifest.
+
+Built for NAS users who produce files at a regular cadence (daily photo syncs, monthly video dumps) and want off-site disaster recovery without the cost of traditional cloud backup services.
+
+**Key features:**
+- Bundles files into monthly tar archives (minimal S3 object count = minimal cost)
 - Move/rename detection (reorganized files are not re-uploaded)
-- Full file-level manifest for searching without downloading
-- Resumable multipart uploads with checkpointing
-- Two-step restore workflow for Glacier's 12-hour retrieval delay
+- Full file-level manifest for browsing and selective restore without downloading everything
+- Resumable multipart uploads with integrity verification
+- Two-step Glacier restore workflow (request → download after ~12 hours)
+- Configurable storage class (STANDARD for testing, DEEP_ARCHIVE for production)
 
 ## Cost Estimate
 
