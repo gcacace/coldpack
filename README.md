@@ -1,4 +1,6 @@
-# coldpack
+<p align="center">
+  <img src="logo.png" alt="coldpack" width="200">
+</p>
 
 Glacier Deep Archive backup CLI for personal NAS disaster recovery.
 
