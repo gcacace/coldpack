@@ -2,6 +2,7 @@
 name = "coldpack"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85.0"
 description = "Glacier Deep Archive backup CLI for personal NAS disaster recovery"
 
 [dependencies]
@@ -24,3 +25,8 @@ tokio = { version = "1", features = ["full"] }
 [dev-dependencies]
 tempfile = "3"
 filetime = "0.2"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
