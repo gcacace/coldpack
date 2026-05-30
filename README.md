@@ -26,44 +26,44 @@ For ~500 GB of photos/videos:
 
 ## Getting Started
 
-### 1. Prerequisites
+### 1. Install
 
-- A development machine with the [Rust toolchain](https://rustup.rs/) installed (for building)
-- An AWS account with an S3 bucket created
-- A Synology NAS running DSM 7+ (x86_64 Intel/AMD)
+**Linux / macOS:**
 
-### 2. Build the Binary
+```bash
+curl -fsSL https://raw.githubusercontent.com/gcacace/coldpack/master/install.sh | sh
+```
 
-Build on any x86_64 Linux machine (or your dev machine if it's Linux x86_64):
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/gcacace/coldpack/master/install.ps1 | iex
+```
+
+Or download a binary directly from [Releases](https://github.com/gcacace/coldpack/releases).
+
+<details>
+<summary>Build from source</summary>
+
+Requires the [Rust toolchain](https://rustup.rs/):
 
 ```bash
 cargo build --release
 ```
 
-The binary is a single self-contained file at `target/release/coldpack` (~23 MB). No other files or libraries are needed.
-
-> **Note:** If the build gets OOM-killed on a memory-constrained machine, limit parallelism:
-> ```bash
-> CARGO_BUILD_JOBS=2 cargo build --release
-> ```
-
-### 3. Deploy to Synology NAS
-
-Copy the binary to your NAS:
+The binary is at `target/release/coldpack` (~23 MB). Copy it to your target machine:
 
 ```bash
 scp target/release/coldpack your-nas-ip:/usr/local/bin/
-ssh your-nas-ip chmod +x /usr/local/bin/coldpack
 ```
 
-That's it — just the one file. It runs natively on DSM 7+ x86_64 systems (DS920+, DS1621+, DS723+, etc.) since they ship a compatible glibc.
+</details>
 
-### 4. Configure AWS Credentials on the NAS
+### 2. Configure AWS Credentials
 
-SSH into your NAS and create a credentials file:
+Create a credentials file on the machine where coldpack will run:
 
 ```bash
-ssh your-nas-ip
 mkdir -p ~/.aws
 cat > ~/.aws/credentials << 'EOF'
 [default]
