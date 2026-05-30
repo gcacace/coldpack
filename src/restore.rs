@@ -404,8 +404,6 @@ mod tests {
     }
 
     fn create_test_tar(dir: &Path, files: &[(&str, &[u8])]) -> PathBuf {
-        use std::io::Write;
-
         let tar_path = dir.join("test.tar");
         let file = std::fs::File::create(&tar_path).unwrap();
         let mut tar = tar::Builder::new(file);
