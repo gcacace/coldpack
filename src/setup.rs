@@ -12,10 +12,10 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
 
     let config_path = config::profile_config_path(profile_name);
     if config_path.exists() {
-        let overwrite = prompt_yes_no(&format!(
-            "Profile '{}' already exists. Overwrite?",
-            profile_name
-        ), false)?;
+        let overwrite = prompt_yes_no(
+            &format!("Profile '{}' already exists. Overwrite?", profile_name),
+            false,
+        )?;
         if !overwrite {
             println!("Setup cancelled.");
             return Ok(());
@@ -34,7 +34,9 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
     println!("  2. GLACIER (cheap, ~$0.004/GB/month, 3-5h retrieval, 90-day min)");
     println!("  3. GLACIER_IR (instant retrieval, ~$0.004/GB/month, 90-day min)");
     println!("  4. STANDARD_IA (infrequent access, ~$0.0125/GB/month, 30-day min)");
-    println!("  5. STANDARD (most expensive, ~$0.023/GB/month, no retrieval delay — good for testing)");
+    println!(
+        "  5. STANDARD (most expensive, ~$0.023/GB/month, no retrieval delay — good for testing)"
+    );
     let storage_class_choice = prompt_with_default("Choice", "1")?;
     let storage_class = match storage_class_choice.as_str() {
         "2" => "GLACIER",
@@ -53,7 +55,10 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         let name = prompt_required("  Label (e.g., \"marco\", \"laura\", \"common\")")?;
 
         if sources.iter().any(|s: &SourceConfig| s.name == name) {
-            eprintln!("  Warning: label '{}' already used. Please choose a different one.", name);
+            eprintln!(
+                "  Warning: label '{}' already used. Please choose a different one.",
+                name
+            );
             continue;
         }
         if name.contains('/') || name.contains('\\') {
@@ -64,7 +69,10 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
         let path_str = prompt_required("  Path")?;
         let path = PathBuf::from(&path_str);
         if !path.exists() {
-            eprintln!("  Warning: path '{}' does not exist (yet). Continuing anyway.", path_str);
+            eprintln!(
+                "  Warning: path '{}' does not exist (yet). Continuing anyway.",
+                path_str
+            );
         }
 
         sources.push(SourceConfig { name, path });
@@ -102,10 +110,7 @@ pub fn run_setup(profile_name: &str) -> Result<()> {
 
     println!("\nExclude patterns (directories/files to skip during scan):");
     println!("  Common exclusions: @eaDir, #recycle, .DS_Store, Thumbs.db");
-    let exclude_input = prompt_with_default(
-        "Patterns (comma-separated)",
-        "@eaDir, #recycle",
-    )?;
+    let exclude_input = prompt_with_default("Patterns (comma-separated)", "@eaDir, #recycle")?;
     let exclude: Vec<String> = exclude_input
         .split(',')
         .map(|s| s.trim().to_string())

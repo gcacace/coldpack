@@ -171,7 +171,8 @@ pub fn extract_archive(
 
     let mut extracted = 0u32;
 
-    for entry in archive.entries()
+    for entry in archive
+        .entries()
         .with_context(|| format!("Failed to read archive: {}", archive_path.display()))?
     {
         let mut entry = entry.with_context(|| "Failed to read tar entry")?;
@@ -187,9 +188,9 @@ pub fn extract_archive(
                 .iter()
                 .find(|f| f.path == entry_path)
                 .map(|f| {
-                    f.history.last().is_none_or(|h| {
-                        !matches!(h, crate::manifest::HistoryEvent::Deleted { .. })
-                    })
+                    f.history
+                        .last()
+                        .is_none_or(|h| !matches!(h, crate::manifest::HistoryEvent::Deleted { .. }))
                 })
                 .unwrap_or(true);
 
@@ -284,8 +285,7 @@ mod tests {
     #[test]
     fn test_determine_archives_by_id() {
         let manifest = test_manifest();
-        let result =
-            determine_archives_needed(&manifest, false, None, Some("backup-2")).unwrap();
+        let result = determine_archives_needed(&manifest, false, None, Some("backup-2")).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "backup-2");
         assert_eq!(result[0].1, "archives/backup-2.tar");
@@ -301,8 +301,7 @@ mod tests {
     #[test]
     fn test_determine_archives_by_path() {
         let manifest = test_manifest();
-        let result =
-            determine_archives_needed(&manifest, false, Some("marco/**"), None).unwrap();
+        let result = determine_archives_needed(&manifest, false, Some("marco/**"), None).unwrap();
         // Both marco files are in backup-1
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "backup-1");
@@ -398,7 +397,10 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         let loaded: RestoreJob = serde_json::from_str(&content).unwrap();
-        assert!(matches!(loaded.archives[0].status, RestoreStatus::Available));
+        assert!(matches!(
+            loaded.archives[0].status,
+            RestoreStatus::Available
+        ));
     }
 
     fn create_test_tar(dir: &Path, files: &[(&str, &[u8])]) -> PathBuf {
@@ -469,10 +471,7 @@ mod tests {
         use crate::manifest::HistoryEvent;
 
         let dir = TempDir::new().unwrap();
-        let zip_path = create_test_tar(
-            dir.path(),
-            &[("marco/deleted.jpg", b"old content")],
-        );
+        let zip_path = create_test_tar(dir.path(), &[("marco/deleted.jpg", b"old content")]);
 
         let output_dir = dir.path().join("output");
         let manifest = Manifest {
@@ -499,10 +498,7 @@ mod tests {
     #[test]
     fn test_extract_full_restore_current_goes_to_normal_path() {
         let dir = TempDir::new().unwrap();
-        let zip_path = create_test_tar(
-            dir.path(),
-            &[("marco/current.jpg", b"current content")],
-        );
+        let zip_path = create_test_tar(dir.path(), &[("marco/current.jpg", b"current content")]);
 
         let output_dir = dir.path().join("output");
         let manifest = Manifest {

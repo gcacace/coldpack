@@ -35,7 +35,13 @@ pub struct CompletedPart {
 }
 
 impl UploadCheckpoint {
-    pub fn new(upload_id: String, s3_key: String, local_archive_path: PathBuf, file_size: u64, archive_hash: String) -> Self {
+    pub fn new(
+        upload_id: String,
+        s3_key: String,
+        local_archive_path: PathBuf,
+        file_size: u64,
+        archive_hash: String,
+    ) -> Self {
         let total_parts = file_size.div_ceil(PART_SIZE) as u32;
         Self {
             upload_id,
@@ -58,8 +64,13 @@ impl UploadCheckpoint {
     }
 
     pub fn record_part(&mut self, part_number: u32, etag: String) {
-        if !self.completed_parts.iter().any(|p| p.part_number == part_number) {
-            self.completed_parts.push(CompletedPart { part_number, etag });
+        if !self
+            .completed_parts
+            .iter()
+            .any(|p| p.part_number == part_number)
+        {
+            self.completed_parts
+                .push(CompletedPart { part_number, etag });
         }
     }
 
@@ -98,7 +109,10 @@ pub fn load_checkpoint(path: &Path) -> Result<UploadCheckpoint> {
     Ok(checkpoint)
 }
 
-pub fn find_existing_checkpoint(profile_dir: &Path, s3_key: &str) -> Result<Option<(PathBuf, UploadCheckpoint)>> {
+pub fn find_existing_checkpoint(
+    profile_dir: &Path,
+    s3_key: &str,
+) -> Result<Option<(PathBuf, UploadCheckpoint)>> {
     let dir = checkpoint_dir(profile_dir);
     if !dir.exists() {
         return Ok(None);
@@ -135,7 +149,8 @@ pub fn hash_file(path: &Path) -> Result<String> {
     let mut hasher = Xxh3::new();
     let mut buf = vec![0u8; HASH_BUF_SIZE];
     loop {
-        let n = file.read(&mut buf)
+        let n = file
+            .read(&mut buf)
             .with_context(|| format!("Failed to read file for hashing: {}", path.display()))?;
         if n == 0 {
             break;
@@ -164,9 +179,7 @@ pub fn run_cleanup(profile_dir: &Path) -> anyhow::Result<()> {
         }
         if cleaned > 0 {
             println!("Cleaned up {} checkpoint file(s).", cleaned);
-            println!(
-                "Note: In production, this would also abort stale multipart uploads on S3."
-            );
+            println!("Note: In production, this would also abort stale multipart uploads on S3.");
         } else {
             println!("No stale checkpoints found.");
         }
@@ -207,13 +220,35 @@ pub async fn upload_archive(
                 .send()
                 .await;
             delete_checkpoint(&path)?;
-            start_new_upload(client, config, profile_dir, s3_key, archive_path, file_size, &archive_hash).await?
+            start_new_upload(
+                client,
+                config,
+                profile_dir,
+                s3_key,
+                archive_path,
+                file_size,
+                &archive_hash,
+            )
+            .await?
         } else {
-            eprintln!("  Resuming upload ({} of {} parts already done)", cp.completed_parts.len(), cp.total_parts);
+            eprintln!(
+                "  Resuming upload ({} of {} parts already done)",
+                cp.completed_parts.len(),
+                cp.total_parts
+            );
             (path, cp)
         }
     } else {
-        start_new_upload(client, config, profile_dir, s3_key, archive_path, file_size, &archive_hash).await?
+        start_new_upload(
+            client,
+            config,
+            profile_dir,
+            s3_key,
+            archive_path,
+            file_size,
+            &archive_hash,
+        )
+        .await?
     };
 
     let upload_bar = ProgressBar::new(file_size);

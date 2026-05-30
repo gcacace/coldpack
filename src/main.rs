@@ -170,7 +170,10 @@ async fn main() -> Result<()> {
             if result.entries.is_empty() {
                 println!("No files match the given filters.");
             } else {
-                println!("{:<60} {:>10} {:>12} {:>20}", "PATH", "SIZE", "MODIFIED", "ARCHIVE");
+                println!(
+                    "{:<60} {:>10} {:>12} {:>20}",
+                    "PATH", "SIZE", "MODIFIED", "ARCHIVE"
+                );
                 println!("{}", "-".repeat(100));
                 for entry in &result.entries {
                     println!(
@@ -184,11 +187,7 @@ async fn main() -> Result<()> {
                 println!("\n{} file(s) found.", result.entries.len());
             }
         }
-        Commands::RestoreRequest {
-            all,
-            path,
-            archive,
-        } => {
+        Commands::RestoreRequest { all, path, archive } => {
             let local_manifest_path = manifest::manifest_local_path(&profile_dir);
             let m = if local_manifest_path.exists() {
                 manifest::load_from_file(&local_manifest_path)?
@@ -196,12 +195,8 @@ async fn main() -> Result<()> {
                 anyhow::bail!("No local manifest found. Run 'coldpack backup' first.");
             };
 
-            let archives_needed = restore::determine_archives_needed(
-                &m,
-                all,
-                path.as_deref(),
-                archive.as_deref(),
-            )?;
+            let archives_needed =
+                restore::determine_archives_needed(&m, all, path.as_deref(), archive.as_deref())?;
 
             if archives_needed.is_empty() {
                 println!("No archives match the given criteria.");

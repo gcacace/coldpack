@@ -98,7 +98,6 @@ fn default_tmp_dir() -> PathBuf {
     std::env::temp_dir().join("coldpack")
 }
 
-
 fn default_storage_class() -> String {
     "DEEP_ARCHIVE".to_string()
 }
@@ -158,8 +157,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read config file: {}", path.display()))?;
 
-    let config: Config =
-        toml::from_str(&content).with_context(|| "Failed to parse config file")?;
+    let config: Config = toml::from_str(&content).with_context(|| "Failed to parse config file")?;
 
     validate_config(&config)?;
     Ok(config)
@@ -170,8 +168,7 @@ pub fn save_config(config: &Config, path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
-    let content =
-        toml::to_string_pretty(config).with_context(|| "Failed to serialize config")?;
+    let content = toml::to_string_pretty(config).with_context(|| "Failed to serialize config")?;
     std::fs::write(path, content)
         .with_context(|| format!("Failed to write config: {}", path.display()))?;
     Ok(())
@@ -433,7 +430,9 @@ max_io_workers = 0
         );
 
         let err = load_config(f.path()).unwrap_err();
-        assert!(err.to_string().contains("max_io_workers must be at least 1"));
+        assert!(err
+            .to_string()
+            .contains("max_io_workers must be at least 1"));
     }
 
     #[test]

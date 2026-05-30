@@ -114,7 +114,11 @@ pub fn scan(
                 continue;
             }
             if let Ok(relative) = entry.path().strip_prefix(&source.path) {
-                let logical = format!("{}/{}", source.name, relative.to_string_lossy().replace('\\', "/"));
+                let logical = format!(
+                    "{}/{}",
+                    source.name,
+                    relative.to_string_lossy().replace('\\', "/")
+                );
                 all_disk_paths.insert(logical);
             }
         }
@@ -174,9 +178,9 @@ pub fn scan(
                 relative.to_string_lossy().replace('\\', "/")
             );
 
-            let metadata = entry.metadata().with_context(|| {
-                format!("Failed to read metadata: {}", disk_path.display())
-            })?;
+            let metadata = entry
+                .metadata()
+                .with_context(|| format!("Failed to read metadata: {}", disk_path.display()))?;
             let size = metadata.len();
             let mtime: DateTime<Utc> = metadata
                 .modified()
@@ -270,8 +274,7 @@ pub fn scan(
         .collect();
 
     for file_entry in &manifest.files {
-        if !seen_paths.contains(&file_entry.path) && !moved_from_paths.contains(&file_entry.path)
-        {
+        if !seen_paths.contains(&file_entry.path) && !moved_from_paths.contains(&file_entry.path) {
             stats.deleted += 1;
             changes.push(FileChange::Deleted {
                 logical_path: file_entry.path.clone(),
@@ -445,7 +448,9 @@ mod tests {
 
         let result = scan(&sources, &manifest, None, &[], false, |_| {}).unwrap();
         assert_eq!(result.stats.modified, 1);
-        assert!(matches!(&result.changes[0], FileChange::Modified { logical_path, .. } if logical_path == "marco/photo.jpg"));
+        assert!(
+            matches!(&result.changes[0], FileChange::Modified { logical_path, .. } if logical_path == "marco/photo.jpg")
+        );
     }
 
     #[test]
@@ -726,17 +731,37 @@ mod tests {
     fn test_should_exclude_exact_match() {
         let root = Path::new("/mnt/nas");
         let patterns = vec!["@eaDir".to_string()];
-        assert!(should_exclude(Path::new("/mnt/nas/@eaDir/file.jpg"), root, &patterns));
-        assert!(should_exclude(Path::new("/mnt/nas/sub/@eaDir/file.jpg"), root, &patterns));
-        assert!(!should_exclude(Path::new("/mnt/nas/photo.jpg"), root, &patterns));
+        assert!(should_exclude(
+            Path::new("/mnt/nas/@eaDir/file.jpg"),
+            root,
+            &patterns
+        ));
+        assert!(should_exclude(
+            Path::new("/mnt/nas/sub/@eaDir/file.jpg"),
+            root,
+            &patterns
+        ));
+        assert!(!should_exclude(
+            Path::new("/mnt/nas/photo.jpg"),
+            root,
+            &patterns
+        ));
     }
 
     #[test]
     fn test_should_exclude_glob() {
         let root = Path::new("/mnt/nas");
         let patterns = vec!["*.tmp".to_string()];
-        assert!(should_exclude(Path::new("/mnt/nas/file.tmp"), root, &patterns));
-        assert!(!should_exclude(Path::new("/mnt/nas/file.jpg"), root, &patterns));
+        assert!(should_exclude(
+            Path::new("/mnt/nas/file.tmp"),
+            root,
+            &patterns
+        ));
+        assert!(!should_exclude(
+            Path::new("/mnt/nas/file.jpg"),
+            root,
+            &patterns
+        ));
     }
 
     #[test]
@@ -784,7 +809,10 @@ mod tests {
         let result = scan(&sources, &manifest, None, &[], false, |_| {}).unwrap();
         // The key assertion: copy.jpg must NOT be a move (original still exists)
         assert_eq!(result.stats.moved, 0);
-        let has_move = result.changes.iter().any(|c| matches!(c, FileChange::Moved { .. }));
+        let has_move = result
+            .changes
+            .iter()
+            .any(|c| matches!(c, FileChange::Moved { .. }));
         assert!(!has_move, "Duplicate file should not be detected as a move");
     }
 

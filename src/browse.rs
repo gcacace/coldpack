@@ -157,8 +157,14 @@ mod tests {
     #[test]
     fn test_browse_after_filter() {
         let manifest = make_manifest(vec![
-            make_file("old.jpg", Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap()),
-            make_file("new.jpg", Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap()),
+            make_file(
+                "old.jpg",
+                Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            ),
+            make_file(
+                "new.jpg",
+                Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap(),
+            ),
         ]);
 
         let filter = BrowseFilter {
@@ -175,8 +181,14 @@ mod tests {
     #[test]
     fn test_browse_before_filter() {
         let manifest = make_manifest(vec![
-            make_file("old.jpg", Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap()),
-            make_file("new.jpg", Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap()),
+            make_file(
+                "old.jpg",
+                Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            ),
+            make_file(
+                "new.jpg",
+                Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap(),
+            ),
         ]);
 
         let filter = BrowseFilter {
@@ -193,10 +205,22 @@ mod tests {
     #[test]
     fn test_browse_combined_filters() {
         let manifest = make_manifest(vec![
-            make_file("marco/old.jpg", Utc.with_ymd_and_hms(2025, 3, 1, 0, 0, 0).unwrap()),
-            make_file("marco/mid.jpg", Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap()),
-            make_file("laura/mid.jpg", Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap()),
-            make_file("marco/new.jpg", Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
+            make_file(
+                "marco/old.jpg",
+                Utc.with_ymd_and_hms(2025, 3, 1, 0, 0, 0).unwrap(),
+            ),
+            make_file(
+                "marco/mid.jpg",
+                Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
+            ),
+            make_file(
+                "laura/mid.jpg",
+                Utc.with_ymd_and_hms(2025, 6, 1, 0, 0, 0).unwrap(),
+            ),
+            make_file(
+                "marco/new.jpg",
+                Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            ),
         ]);
 
         let filter = BrowseFilter {

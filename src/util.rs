@@ -43,7 +43,10 @@ mod tests {
         assert_eq!(parse_storage_class("STANDARD_IA"), StorageClass::StandardIa);
         assert_eq!(parse_storage_class("GLACIER_IR"), StorageClass::GlacierIr);
         assert_eq!(parse_storage_class("GLACIER"), StorageClass::Glacier);
-        assert_eq!(parse_storage_class("DEEP_ARCHIVE"), StorageClass::DeepArchive);
+        assert_eq!(
+            parse_storage_class("DEEP_ARCHIVE"),
+            StorageClass::DeepArchive
+        );
     }
 
     #[test]

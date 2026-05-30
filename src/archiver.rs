@@ -266,7 +266,9 @@ mod tests {
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", content)];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {})
+            .unwrap()
+            .unwrap();
         assert_eq!(result.file_count, 1);
         assert!(result.size_bytes > 0);
         assert!(output.exists());
@@ -301,7 +303,9 @@ mod tests {
             make_new_change(dir.path(), "2026/04/photo3.jpg", b"photo 3"),
         ];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {})
+            .unwrap()
+            .unwrap();
         assert_eq!(result.file_count, 3);
 
         let file = File::open(&output).unwrap();
@@ -344,7 +348,9 @@ mod tests {
             },
         ];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {})
+            .unwrap()
+            .unwrap();
         assert_eq!(result.file_count, 2);
 
         let file = File::open(&output).unwrap();
@@ -380,7 +386,9 @@ mod tests {
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", b"data")];
 
-        let result = create_archive(&output, &changes, |_, _| {}).unwrap().unwrap();
+        let result = create_archive(&output, &changes, |_, _| {})
+            .unwrap()
+            .unwrap();
         assert!(result.path.exists());
     }
 

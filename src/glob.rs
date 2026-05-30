@@ -156,17 +156,37 @@ mod tests {
     fn test_path_matches_any_exact() {
         let root = Path::new("/mnt/nas");
         let patterns = vec!["@eaDir".to_string()];
-        assert!(path_matches_any(Path::new("/mnt/nas/@eaDir/file.jpg"), root, &patterns));
-        assert!(path_matches_any(Path::new("/mnt/nas/sub/@eaDir/file.jpg"), root, &patterns));
-        assert!(!path_matches_any(Path::new("/mnt/nas/photo.jpg"), root, &patterns));
+        assert!(path_matches_any(
+            Path::new("/mnt/nas/@eaDir/file.jpg"),
+            root,
+            &patterns
+        ));
+        assert!(path_matches_any(
+            Path::new("/mnt/nas/sub/@eaDir/file.jpg"),
+            root,
+            &patterns
+        ));
+        assert!(!path_matches_any(
+            Path::new("/mnt/nas/photo.jpg"),
+            root,
+            &patterns
+        ));
     }
 
     #[test]
     fn test_path_matches_any_glob() {
         let root = Path::new("/mnt/nas");
         let patterns = vec!["*.tmp".to_string()];
-        assert!(path_matches_any(Path::new("/mnt/nas/file.tmp"), root, &patterns));
-        assert!(!path_matches_any(Path::new("/mnt/nas/file.jpg"), root, &patterns));
+        assert!(path_matches_any(
+            Path::new("/mnt/nas/file.tmp"),
+            root,
+            &patterns
+        ));
+        assert!(!path_matches_any(
+            Path::new("/mnt/nas/file.jpg"),
+            root,
+            &patterns
+        ));
     }
 
     #[test]
@@ -178,10 +198,30 @@ mod tests {
     #[test]
     fn test_path_matches_any_multiple() {
         let root = Path::new("/mnt/nas");
-        let patterns = vec!["@eaDir".to_string(), "#recycle".to_string(), ".DS_Store".to_string()];
-        assert!(path_matches_any(Path::new("/mnt/nas/@eaDir/x"), root, &patterns));
-        assert!(path_matches_any(Path::new("/mnt/nas/#recycle/x"), root, &patterns));
-        assert!(path_matches_any(Path::new("/mnt/nas/.DS_Store"), root, &patterns));
-        assert!(!path_matches_any(Path::new("/mnt/nas/photo.jpg"), root, &patterns));
+        let patterns = vec![
+            "@eaDir".to_string(),
+            "#recycle".to_string(),
+            ".DS_Store".to_string(),
+        ];
+        assert!(path_matches_any(
+            Path::new("/mnt/nas/@eaDir/x"),
+            root,
+            &patterns
+        ));
+        assert!(path_matches_any(
+            Path::new("/mnt/nas/#recycle/x"),
+            root,
+            &patterns
+        ));
+        assert!(path_matches_any(
+            Path::new("/mnt/nas/.DS_Store"),
+            root,
+            &patterns
+        ));
+        assert!(!path_matches_any(
+            Path::new("/mnt/nas/photo.jpg"),
+            root,
+            &patterns
+        ));
     }
 }

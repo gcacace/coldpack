@@ -8,9 +8,9 @@ use std::path::Path;
 use crate::archiver;
 use crate::config::Config;
 use crate::manifest::{self, Archive, FileEntry, HistoryEvent, Manifest};
-use crate::scanner::{self, FileChange};
 #[cfg(test)]
 use crate::scanner::ScanResult;
+use crate::scanner::{self, FileChange};
 use crate::uploader;
 
 pub struct BackupOptions {
@@ -26,7 +26,11 @@ pub struct BackupReport {
     pub manifest_updated: bool,
 }
 
-pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOptions) -> Result<BackupReport> {
+pub async fn run_backup(
+    config: &Config,
+    profile_dir: &Path,
+    options: &BackupOptions,
+) -> Result<BackupReport> {
     // 1. Resolve cutoff
     let cutoff_str = options
         .cutoff_override
@@ -122,9 +126,10 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 now.format("%Y%m%dT%H%M%S")
             ));
 
-            let result = archiver::create_archive_from_group(&archive_path, group, |current, _total| {
-                archive_bar.set_position(files_done + current as u64);
-            })?;
+            let result =
+                archiver::create_archive_from_group(&archive_path, group, |current, _total| {
+                    archive_bar.set_position(files_done + current as u64);
+                })?;
 
             files_done += result.file_count as u64;
             total_archive_size += result.size_bytes;
@@ -140,7 +145,8 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 group.label,
                 result.size_bytes as f64 / 1024.0 / 1024.0
             );
-            uploader::upload_archive(&s3_client, config, profile_dir, &s3_key, &archive_path).await?;
+            uploader::upload_archive(&s3_client, config, profile_dir, &s3_key, &archive_path)
+                .await?;
 
             // Clean up local zip
             let _ = std::fs::remove_file(&archive_path);
@@ -154,7 +160,12 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
                 file_count: result.file_count,
             });
             for (logical_path, _, _) in &group.files {
-                add_file_to_manifest(&mut manifest, &scan_result.changes, logical_path, &archive_id);
+                add_file_to_manifest(
+                    &mut manifest,
+                    &scan_result.changes,
+                    logical_path,
+                    &archive_id,
+                );
             }
             manifest.last_backup = Some(now);
             manifest::save_to_s3(config, profile_dir, &manifest).await?;
@@ -164,9 +175,10 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
     }
 
     // 5. Apply non-archive changes (moves, deletes) and final save
-    let has_moves_or_deletes = scan_result.changes.iter().any(|c| {
-        matches!(c, FileChange::Moved { .. } | FileChange::Deleted { .. })
-    });
+    let has_moves_or_deletes = scan_result
+        .changes
+        .iter()
+        .any(|c| matches!(c, FileChange::Moved { .. } | FileChange::Deleted { .. }));
     if has_moves_or_deletes || archive_plan.groups.is_empty() {
         apply_moves_and_deletes(&mut manifest, &scan_result.changes, now);
         manifest.last_backup = Some(now);
@@ -177,30 +189,48 @@ pub async fn run_backup(config: &Config, profile_dir: &Path, options: &BackupOpt
 
     Ok(BackupReport {
         scan_stats: scan_result.stats,
-        archive_size: if total_archive_size > 0 { Some(total_archive_size) } else { None },
+        archive_size: if total_archive_size > 0 {
+            Some(total_archive_size)
+        } else {
+            None
+        },
         archive_file_count: total_archive_file_count,
         manifest_updated: true,
     })
 }
 
-
 fn print_dry_run_plan(scan_result: &scanner::ScanResult, config: &Config) {
     let max_zip_bytes = config.backup.max_archive_size_mb * 1024 * 1024;
     let archive_plan = archiver::plan_archives(&scan_result.changes, max_zip_bytes);
 
-    let moved_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
-        FileChange::Moved { logical_path, old_path, .. } => Some((old_path.as_str(), logical_path.as_str())),
-        _ => None,
-    }).collect();
+    let moved_files: Vec<_> = scan_result
+        .changes
+        .iter()
+        .filter_map(|c| match c {
+            FileChange::Moved {
+                logical_path,
+                old_path,
+                ..
+            } => Some((old_path.as_str(), logical_path.as_str())),
+            _ => None,
+        })
+        .collect();
 
-    let deleted_files: Vec<_> = scan_result.changes.iter().filter_map(|c| match c {
-        FileChange::Deleted { logical_path } => Some(logical_path.as_str()),
-        _ => None,
-    }).collect();
+    let deleted_files: Vec<_> = scan_result
+        .changes
+        .iter()
+        .filter_map(|c| match c {
+            FileChange::Deleted { logical_path } => Some(logical_path.as_str()),
+            _ => None,
+        })
+        .collect();
 
     println!("\nDry run — backup plan:");
     println!("  Storage class: {}", config.storage.storage_class);
-    println!("  Max archive size: {} MB", config.backup.max_archive_size_mb);
+    println!(
+        "  Max archive size: {} MB",
+        config.backup.max_archive_size_mb
+    );
 
     if archive_plan.groups.is_empty() {
         println!("  No files to archive.");
@@ -292,7 +322,10 @@ pub fn run_status(profile_dir: &std::path::Path, profile_name: &str) -> Result<(
                 .iter()
                 .filter(|a| matches!(a.status, crate::restore::RestoreStatus::Available))
                 .count();
-            println!("  {} — {} pending, {} available", job.id, pending, available);
+            println!(
+                "  {} — {} pending, {} available",
+                job.id, pending, available
+            );
         }
     }
 
@@ -310,7 +343,6 @@ pub fn run_status(profile_dir: &std::path::Path, profile_name: &str) -> Result<(
     Ok(())
 }
 
-
 fn add_file_to_manifest(
     manifest: &mut Manifest,
     changes: &[FileChange],
@@ -318,14 +350,25 @@ fn add_file_to_manifest(
     archive_id: &str,
 ) {
     let change = changes.iter().find(|c| match c {
-        FileChange::New { logical_path: p, .. } | FileChange::Modified { logical_path: p, .. } => p == logical_path,
+        FileChange::New {
+            logical_path: p, ..
+        }
+        | FileChange::Modified {
+            logical_path: p, ..
+        } => p == logical_path,
         _ => false,
     });
 
     let Some(change) = change else { return };
 
     match change {
-        FileChange::New { logical_path, size, mtime, fingerprint, .. } => {
+        FileChange::New {
+            logical_path,
+            size,
+            mtime,
+            fingerprint,
+            ..
+        } => {
             manifest.files.push(FileEntry {
                 path: logical_path.clone(),
                 size: *size,
@@ -335,7 +378,13 @@ fn add_file_to_manifest(
                 history: vec![],
             });
         }
-        FileChange::Modified { logical_path, size, mtime, fingerprint, .. } => {
+        FileChange::Modified {
+            logical_path,
+            size,
+            mtime,
+            fingerprint,
+            ..
+        } => {
             if let Some(entry) = manifest.files.iter_mut().find(|f| f.path == *logical_path) {
                 entry.history.push(HistoryEvent::Added {
                     archive_id: entry.archive_id.clone(),
@@ -352,14 +401,14 @@ fn add_file_to_manifest(
     }
 }
 
-fn apply_moves_and_deletes(
-    manifest: &mut Manifest,
-    changes: &[FileChange],
-    now: DateTime<Utc>,
-) {
+fn apply_moves_and_deletes(manifest: &mut Manifest, changes: &[FileChange], now: DateTime<Utc>) {
     for change in changes {
         match change {
-            FileChange::Moved { logical_path, old_path, fingerprint } => {
+            FileChange::Moved {
+                logical_path,
+                old_path,
+                fingerprint,
+            } => {
                 if let Some(entry) = manifest.files.iter_mut().find(|f| f.path == *old_path) {
                     entry.history.push(HistoryEvent::Moved {
                         from: old_path.clone(),
@@ -378,7 +427,6 @@ fn apply_moves_and_deletes(
         }
     }
 }
-
 
 #[cfg(test)]
 pub fn apply_changes_to_manifest(
@@ -630,7 +678,13 @@ mod tests {
         }]);
 
         let result = apply_changes_to_manifest(
-            manifest, &scan, "backup-2", "archives/backup-2.tar", 0, 0, now,
+            manifest,
+            &scan,
+            "backup-2",
+            "archives/backup-2.tar",
+            0,
+            0,
+            now,
         );
 
         // No new archive since no files uploaded
@@ -668,7 +722,13 @@ mod tests {
         }]);
 
         let result = apply_changes_to_manifest(
-            manifest, &scan, "backup-2", "archives/backup-2.tar", 0, 0, now,
+            manifest,
+            &scan,
+            "backup-2",
+            "archives/backup-2.tar",
+            0,
+            0,
+            now,
         );
 
         assert_eq!(result.files.len(), 1);
@@ -752,22 +812,38 @@ mod tests {
         assert_eq!(result.files.len(), 4); // 3 original + 1 new
 
         // New file
-        let new_file = result.files.iter().find(|f| f.path == "laura/new.jpg").unwrap();
+        let new_file = result
+            .files
+            .iter()
+            .find(|f| f.path == "laura/new.jpg")
+            .unwrap();
         assert_eq!(new_file.archive_id, "backup-2");
 
         // Modified
-        let modified = result.files.iter().find(|f| f.path == "marco/existing.jpg").unwrap();
+        let modified = result
+            .files
+            .iter()
+            .find(|f| f.path == "marco/existing.jpg")
+            .unwrap();
         assert_eq!(modified.size, 1500);
         assert_eq!(modified.archive_id, "backup-2");
         assert_eq!(modified.history.len(), 1);
 
         // Moved
-        let moved = result.files.iter().find(|f| f.path == "common/to-move.jpg").unwrap();
+        let moved = result
+            .files
+            .iter()
+            .find(|f| f.path == "common/to-move.jpg")
+            .unwrap();
         assert_eq!(moved.archive_id, "backup-1"); // content still in old archive
         assert_eq!(moved.history.len(), 1);
 
         // Deleted
-        let deleted = result.files.iter().find(|f| f.path == "marco/to-delete.jpg").unwrap();
+        let deleted = result
+            .files
+            .iter()
+            .find(|f| f.path == "marco/to-delete.jpg")
+            .unwrap();
         assert_eq!(deleted.history.len(), 1);
         assert!(matches!(&deleted.history[0], HistoryEvent::Deleted { .. }));
     }
@@ -796,7 +872,13 @@ mod tests {
         }]);
 
         let result = apply_changes_to_manifest(
-            manifest, &scan, "backup-2", "archives/backup-2.tar", 0, 0, now,
+            manifest,
+            &scan,
+            "backup-2",
+            "archives/backup-2.tar",
+            0,
+            0,
+            now,
         );
 
         // file_count is 0, so no archive added

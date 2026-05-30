@@ -2,14 +2,12 @@
 
 use anyhow::{Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
-use chrono::{Datelike, DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Manifest {
@@ -88,10 +86,7 @@ pub fn resolve_cutoff(cutoff_str: &str) -> Result<Option<DateTime<Utc>>> {
         "start_of_current_month" => {
             let now = Utc::now();
             let first_of_month = now.date_naive().with_day(1).unwrap();
-            let dt = first_of_month
-                .and_hms_opt(0, 0, 0)
-                .unwrap()
-                .and_utc();
+            let dt = first_of_month.and_hms_opt(0, 0, 0).unwrap().and_utc();
             Ok(Some(dt))
         }
         date_str => {
@@ -121,8 +116,8 @@ pub fn save_to_file(manifest: &Manifest, path: &Path) -> Result<()> {
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
     let tmp_path = path.with_extension("json.tmp");
-    let content = serde_json::to_string(manifest)
-        .with_context(|| "Failed to serialize manifest")?;
+    let content =
+        serde_json::to_string(manifest).with_context(|| "Failed to serialize manifest")?;
     std::fs::write(&tmp_path, &content)
         .with_context(|| format!("Failed to write manifest to: {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path)
@@ -317,7 +312,10 @@ mod tests {
         assert_eq!(result.date_naive().day(), 1);
         assert_eq!(result.date_naive().month(), now.date_naive().month());
         assert_eq!(result.date_naive().year(), now.date_naive().year());
-        assert_eq!(result.time(), chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        assert_eq!(
+            result.time(),
+            chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()
+        );
     }
 
     #[test]
