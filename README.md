@@ -283,7 +283,7 @@ coldpack browse --path "**/*.mp4"
 coldpack browse --after 2026-05-01 --before 2026-06-01
 ```
 
-### `coldpack restore-request [--all | --path <glob> | --archive <id>]`
+### `coldpack restore-request [--all | --path <glob> | --archive <id>] [--include-deleted] [--include-versions [all]]`
 
 Initiate Glacier Deep Archive restoration (takes ~12 hours):
 
@@ -296,17 +296,42 @@ coldpack restore-request --path "marco/2026/05/**"
 
 # Restore a specific archive
 coldpack restore-request --archive "backup-2026-05-02T03:00:00Z"
+
+# Include archives needed for older versions and deleted files
+coldpack restore-request --all --include-deleted --include-versions all
 ```
 
-### `coldpack restore-download [--output <dir>]`
+Use `--include-deleted` and `--include-versions` to also request the archives that contain older versions and deleted files from Glacier. Pass the same flags to `restore-download` later.
+
+### `coldpack restore-download [--output <dir>] [--include-deleted] [--include-versions [all]]`
 
 Download files that have been restored from Glacier:
 
 ```bash
+# Restore only current files (moved files appear at their latest path)
 coldpack restore-download --output /volume1/restored
+
+# Also restore files that were deleted before the disaster
+coldpack restore-download --output /volume1/restored --include-deleted
+
+# Include the most recent previous version of modified files
+coldpack restore-download --output /volume1/restored --include-versions
+
+# Include ALL historical versions of modified files + deleted files
+coldpack restore-download --output /volume1/restored --include-deleted --include-versions all
 ```
 
-Run this ~12 hours after `restore-request`. For a full restore (`--all`), the latest version of each file is placed at its canonical path, older versions go to `__versions/`.
+Run this ~12 hours after `restore-request`. Files that were moved/renamed are automatically restored to their most recent path. Deleted files and older versions go to `__versions/`, grouped by archive date:
+
+```
+/volume1/restored/
+  marco/photo.jpg                          # Current file (latest version, at current path)
+  common/moved-photo.jpg                   # File that was moved (restored to new path)
+  __versions/
+    2026-03-01/marco/old-deleted.jpg       # Deleted file (--include-deleted)
+    2026-03-01/marco/photo.jpg             # Older version from March (--include-versions all)
+    2026-05-15/marco/photo.jpg             # Older version from May (--include-versions all)
+```
 
 ### `coldpack status`
 

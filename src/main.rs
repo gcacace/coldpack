@@ -75,6 +75,14 @@ enum Commands {
         /// Restore a specific archive by ID
         #[arg(long, conflicts_with_all = ["all", "path"])]
         archive: Option<String>,
+
+        /// Also include archives needed for deleted files
+        #[arg(long)]
+        include_deleted: bool,
+
+        /// Also include archives needed for previous versions ("latest" or "all")
+        #[arg(long, num_args = 0..=1, default_missing_value = "latest")]
+        include_versions: Option<String>,
     },
 
     /// Download files that have been restored from Glacier
@@ -82,6 +90,14 @@ enum Commands {
         /// Output directory for restored files
         #[arg(long, default_value = "./restored")]
         output: PathBuf,
+
+        /// Also restore files that were deleted before the backup
+        #[arg(long)]
+        include_deleted: bool,
+
+        /// Include previous versions of modified files ("latest" or "all")
+        #[arg(long, num_args = 0..=1, default_missing_value = "latest")]
+        include_versions: Option<String>,
     },
 
     /// Show backup status and pending operations
@@ -187,7 +203,13 @@ async fn main() -> Result<()> {
                 println!("\n{} file(s) found.", result.entries.len());
             }
         }
-        Commands::RestoreRequest { all, path, archive } => {
+        Commands::RestoreRequest {
+            all,
+            path,
+            archive,
+            include_deleted,
+            include_versions,
+        } => {
             let local_manifest_path = manifest::manifest_local_path(&profile_dir);
             let m = if local_manifest_path.exists() {
                 manifest::load_from_file(&local_manifest_path)?
@@ -195,8 +217,22 @@ async fn main() -> Result<()> {
                 anyhow::bail!("No local manifest found. Run 'coldpack backup' first.");
             };
 
-            let archives_needed =
-                restore::determine_archives_needed(&m, all, path.as_deref(), archive.as_deref())?;
+            let extract_options = restore::ExtractOptions {
+                include_deleted,
+                include_versions: match include_versions.as_deref() {
+                    Some("all") => restore::VersionMode::All,
+                    Some(_) => restore::VersionMode::Latest,
+                    None => restore::VersionMode::None,
+                },
+            };
+
+            let archives_needed = restore::determine_archives_needed(
+                &m,
+                all,
+                path.as_deref(),
+                archive.as_deref(),
+                &extract_options,
+            )?;
 
             if archives_needed.is_empty() {
                 println!("No archives match the given criteria.");
@@ -222,7 +258,19 @@ async fn main() -> Result<()> {
 
             restore::save_restore_job(&profile_dir, &job)?;
         }
-        Commands::RestoreDownload { output } => {
+        Commands::RestoreDownload {
+            output,
+            include_deleted,
+            include_versions,
+        } => {
+            let _extract_options = restore::ExtractOptions {
+                include_deleted,
+                include_versions: match include_versions.as_deref() {
+                    Some("all") => restore::VersionMode::All,
+                    Some(_) => restore::VersionMode::Latest,
+                    None => restore::VersionMode::None,
+                },
+            };
             let jobs = restore::load_restore_jobs(&profile_dir)?;
             if jobs.is_empty() {
                 println!("No pending restore jobs found.");
