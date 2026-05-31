@@ -72,7 +72,7 @@ enum ExtractionDecision {
 /// Moved events in reverse. Each Moved { from, at } means "before `at`,
 /// the path was `from`".
 #[cfg(test)]
-fn path_at_time<'a>(file: &'a FileEntry, target_time: DateTime<Utc>) -> &'a str {
+fn path_at_time(file: &FileEntry, target_time: DateTime<Utc>) -> &str {
     let mut current_path = file.path.as_str();
     for event in file.history.iter().rev() {
         if let HistoryEvent::Moved { from, at } = event {
