@@ -124,7 +124,7 @@ pub fn profile_config_path(name: &str) -> PathBuf {
     profile_dir(name).join("config.toml")
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn list_profiles() -> Result<Vec<String>> {
     let dir = profiles_dir();
     if !dir.exists() {
@@ -145,12 +145,6 @@ pub fn list_profiles() -> Result<Vec<String>> {
     }
     profiles.sort();
     Ok(profiles)
-}
-
-#[allow(dead_code)]
-pub fn load_config_from_profile(profile_name: &str) -> Result<Config> {
-    let path = profile_config_path(profile_name);
-    load_config(&path)
 }
 
 pub fn load_config(path: &Path) -> Result<Config> {

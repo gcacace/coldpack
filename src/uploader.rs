@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart as S3CompletedPart};
@@ -59,6 +57,7 @@ impl UploadCheckpoint {
         (1..=self.total_parts).find(|n| !completed.contains(n))
     }
 
+    #[cfg(test)]
     pub fn is_complete(&self) -> bool {
         self.completed_parts.len() as u32 == self.total_parts
     }
@@ -83,10 +82,6 @@ impl UploadCheckpoint {
 
 pub fn checkpoint_dir(profile_dir: &Path) -> PathBuf {
     profile_dir.join("uploads")
-}
-
-pub fn checkpoint_path(profile_dir: &Path, upload_id: &str) -> PathBuf {
-    checkpoint_dir(profile_dir).join(format!("{}.json", upload_id))
 }
 
 pub fn save_checkpoint(path: &Path, checkpoint: &UploadCheckpoint) -> Result<()> {
@@ -160,6 +155,7 @@ pub fn hash_file(path: &Path) -> Result<String> {
     Ok(format!("{:016x}", hasher.digest()))
 }
 
+#[cfg(test)]
 pub fn compute_total_parts(file_size: u64) -> u32 {
     file_size.div_ceil(PART_SIZE) as u32
 }

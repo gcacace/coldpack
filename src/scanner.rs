@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;

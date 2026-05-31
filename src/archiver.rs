@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use chrono::Datelike;
 use std::collections::BTreeMap;
@@ -9,7 +7,6 @@ use std::path::{Path, PathBuf};
 use crate::scanner::FileChange;
 
 pub struct ArchiveResult {
-    pub path: PathBuf,
     pub size_bytes: u64,
     pub file_count: u32,
 }
@@ -141,12 +138,12 @@ pub fn create_archive_from_group(
         .len();
 
     Ok(ArchiveResult {
-        path: output_path.to_path_buf(),
         size_bytes: archive_size,
         file_count: total,
     })
 }
 
+#[cfg(test)]
 pub fn create_archive(
     output_path: &Path,
     changes: &[FileChange],
@@ -198,7 +195,6 @@ pub fn create_archive(
         .len();
 
     Ok(Some(ArchiveResult {
-        path: output_path.to_path_buf(),
         size_bytes: archive_size,
         file_count: total,
     }))
@@ -386,10 +382,10 @@ mod tests {
 
         let changes = vec![make_new_change(dir.path(), "photo.jpg", b"data")];
 
-        let result = create_archive(&output, &changes, |_, _| {})
+        create_archive(&output, &changes, |_, _| {})
             .unwrap()
             .unwrap();
-        assert!(result.path.exists());
+        assert!(output.exists());
     }
 
     #[test]

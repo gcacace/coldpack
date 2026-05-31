@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -151,6 +149,7 @@ pub fn load_restore_jobs(profile_dir: &Path) -> Result<Vec<(PathBuf, RestoreJob)
     Ok(jobs)
 }
 
+#[cfg(test)]
 pub fn update_restore_job(path: &Path, job: &RestoreJob) -> Result<()> {
     let content =
         serde_json::to_string_pretty(job).with_context(|| "Failed to serialize restore job")?;
@@ -159,6 +158,7 @@ pub fn update_restore_job(path: &Path, job: &RestoreJob) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn extract_archive(
     archive_path: &Path,
     output_dir: &Path,
